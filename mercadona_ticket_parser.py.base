@@ -1,0 +1,2444 @@
+import re
+from datetime import datetime
+from dataclasses import dataclass
+from typing import List, Optional
+import psycopg2
+from psycopg2.extras import execute_values
+from contextlib import contextmanager
+import base64
+import os
+import io
+from email.mime.text import MIMEText
+import pickle
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+import pdfplumber
+from pathlib import Path
+import logging
+import json
+import hashlib
+import shutil
+from enum import Enum
+import traceback
+import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import calendar
+
+# =============================================================================
+# CONFIGURACIÓN DE LOGGING
+# =============================================================================
+
+def setup_logging(log_dir='logs', log_level=logging.INFO):
+    """Configura el sistema de logging"""
+    Path(log_dir).mkdir(exist_ok=True)
+    
+    # Formato detallado
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Handler para archivo (todos los logs)
+    file_handler = logging.FileHandler(
+        f"{log_dir}/tickets_{datetime.now().strftime('%Y%m%d')}.log",
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    
+    # Handler para archivo de errores
+    error_handler = logging.FileHandler(
+        f"{log_dir}/errors_{datetime.now().strftime('%Y%m%d')}.log",
+        encoding='utf-8'
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(formatter)
+    
+    # Handler para consola
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    
+    # Configurar logger raíz
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(error_handler)
+    root_logger.addHandler(console_handler)
+    
+    return root_logger
+
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# ENUMS Y CLASES DE ESTADO
+# =============================================================================
+
+class ProcessingStatus(Enum):
+    """Estados posibles de procesamiento de un ticket"""
+    PENDING = "pending"           # En espera de procesar
+    DOWNLOADING = "downloading"   # Descargando PDF
+    EXTRACTING = "extracting"     # Extrayendo texto
+    PARSING = "parsing"           # Parseando datos
+    VALIDATING = "validating"     # Validando datos
+    SAVING = "saving"             # Guardando en BD
+    COMPLETED = "completed"       # Completado exitosamente
+    FAILED = "failed"             # Falló
+    RETRY = "retry"               # Reintento programado
+
+@dataclass
+class ProcessingError:
+    """Información de un error de procesamiento"""
+    timestamp: datetime
+    stage: str
+    error_type: str
+    error_message: str
+    traceback: str
+    recoverable: bool
+
+@dataclass
+class Product:
+    """Representa un producto en el ticket"""
+    quantity: int
+    description: str
+    unit_price: Optional[float]
+    total_price: float
+    weight: Optional[str] = None
+
+@dataclass
+class TicketData:
+    """Representa todos los datos del ticket"""
+    store_name: str
+    cif: str
+    address: str
+    postal_code: str
+    city: str
+    phone: str
+    date: datetime
+    time: str
+    order_number: str
+    invoice_number: str
+    products: List[Product]
+    total: float
+    payment_method: str
+    iva_breakdown: dict
+
+class MercadonaTicketParser:
+    """Parser para tickets de Mercadona"""
+    
+    def __init__(self, text: str):
+        self.text = text
+        self.lines = text.strip().split('\n')
+    
+    def parse(self) -> TicketData:
+        """Parsea el ticket completo"""
+        ticket = TicketData(
+            store_name="",
+            cif="",
+            address="",
+            postal_code="",
+            city="",
+            phone="",
+            date=None,
+            time="",
+            order_number="",
+            invoice_number="",
+            products=[],
+            total=0.0,
+            payment_method="",
+            iva_breakdown={}
+        )
+        
+        # Parsear información de la tienda
+        self._parse_store_info(ticket)
+        
+        # Parsear productos
+        self._parse_products(ticket)
+        
+        # Parsear total
+        self._parse_total(ticket)
+        
+        # Parsear IVA
+        self._parse_iva(ticket)
+        
+        return ticket
+    
+    def _parse_store_info(self, ticket: TicketData):
+        """Extrae información de la tienda"""
+        for line in self.lines:
+            if "MERCADONA" in line and "A-" in line:
+                match = re.search(r'MERCADONA.*?A-(\d+)', line)
+                if match:
+                    ticket.store_name = "MERCADONA, S.A."
+                    ticket.cif = f"A-{match.group(1)}"
+            
+            elif "C/" in line or "HUMANES" in line:
+                ticket.address = line.strip()
+            
+            elif re.match(r'\d{5}\s+\w+', line):
+                parts = line.strip().split()
+                ticket.postal_code = parts[0]
+                ticket.city = ' '.join(parts[1:])
+            
+            elif "TELÉFONO:" in line:
+                match = re.search(r'(\d{9})', line)
+                if match:
+                    ticket.phone = match.group(1)
+            
+            elif re.match(r'\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}', line):
+                parts = line.strip().split()
+                ticket.date = datetime.strptime(parts[0], "%d/%m/%Y")
+                ticket.time = parts[1]
+            
+            elif "OP:" in line:
+                match = re.search(r'OP:\s*(\d+)', line)
+                if match:
+                    ticket.order_number = match.group(1)
+            
+            elif "FACTURA SIMPLIFICADA:" in line:
+                match = re.search(r'(\d+-\d+-\d+)', line)
+                if match:
+                    ticket.invoice_number = match.group(1)
+    
+    def _parse_products(self, ticket: TicketData):
+        """Extrae los productos del ticket"""
+        in_products = False
+        
+        for line in self.lines:
+            line = line.strip()
+            
+            # Detectar inicio de productos
+            if "Descripción" in line and "Importe" in line:
+                in_products = True
+                continue
+            
+            # Detectar fin de productos
+            if "TOTAL" in line and "€" in line:
+                in_products = False
+                continue
+            
+            if not in_products or not line:
+                continue
+            
+            # Parsear línea de producto
+            product = self._parse_product_line(line)
+            if product:
+                ticket.products.append(product)
+    
+    def _parse_product_line(self, line: str) -> Optional[Product]:
+        """Parsea una línea de producto"""
+        # Patrón: cantidad + descripción + precio(s)
+        # Ejemplo: "1 CHULETA PAVO 4,20"
+        # Ejemplo: "2 YOGUR GRIEGO LIGERO 1,55 3,10"
+        
+        parts = line.split()
+        if len(parts) < 2:
+            return None
+        
+        try:
+            quantity = int(parts[0])
+        except ValueError:
+            return None
+        
+        # Buscar precios (números con coma)
+        prices = []
+        price_indices = []
+        for i, part in enumerate(parts):
+            if re.match(r'\d+,\d+', part):
+                prices.append(float(part.replace(',', '.')))
+                price_indices.append(i)
+        
+        if not prices:
+            return None
+        
+        # La descripción está entre la cantidad y el primer precio
+        if price_indices:
+            desc_parts = parts[1:price_indices[0]]
+            description = ' '.join(desc_parts)
+        else:
+            return None
+        
+        # Verificar si hay peso
+        weight = None
+        if 'kg' in line or '€/kg' in line:
+            weight_match = re.search(r'(\d+,\d+)\s*kg', line)
+            if weight_match:
+                weight = weight_match.group(1) + ' kg'
+        
+        # Si hay dos precios, el primero es unitario y el segundo total
+        if len(prices) == 2:
+            unit_price = prices[0]
+            total_price = prices[1]
+        else:
+            unit_price = None
+            total_price = prices[0]
+        
+        return Product(
+            quantity=quantity,
+            description=description,
+            unit_price=unit_price,
+            total_price=total_price,
+            weight=weight
+        )
+    
+    def _parse_total(self, ticket: TicketData):
+        """Extrae el total"""
+        for line in self.lines:
+            if "TOTAL" in line and "€" in line:
+                match = re.search(r'(\d+,\d+)', line)
+                if match:
+                    ticket.total = float(match.group(1).replace(',', '.'))
+                    break
+    
+    def _parse_iva(self, ticket: TicketData):
+        """Extrae el desglose de IVA"""
+        iva_section = False
+        for line in self.lines:
+            if "IVA" in line and "BASE IMPONIBLE" in line:
+                iva_section = True
+                continue
+            
+            if iva_section and re.match(r'\d+%', line):
+                parts = line.strip().split()
+                if len(parts) >= 3:
+                    rate = parts[0]
+                    base = float(parts[1].replace(',', '.'))
+                    quota = float(parts[2].replace(',', '.'))
+                    ticket.iva_breakdown[rate] = {
+                        'base': base,
+                        'cuota': quota
+                    }
+    
+    def _parse_payment_method(self, ticket: TicketData):
+        """Extrae el método de pago"""
+        for line in self.lines:
+            if "TARJETA BANCARIA" in line:
+                ticket.payment_method = "TARJETA BANCARIA"
+                break
+
+
+def format_ticket(ticket: TicketData) -> str:
+    """Formatea el ticket para impresión"""
+    output = []
+    output.append("=" * 60)
+    output.append(f"TICKET DE COMPRA - {ticket.store_name}")
+    output.append("=" * 60)
+    output.append(f"CIF: {ticket.cif}")
+    output.append(f"Dirección: {ticket.address}")
+    output.append(f"Ciudad: {ticket.postal_code} {ticket.city}")
+    output.append(f"Teléfono: {ticket.phone}")
+    output.append(f"Fecha: {ticket.date.strftime('%d/%m/%Y') if ticket.date else 'N/A'}")
+    output.append(f"Hora: {ticket.time}")
+    output.append(f"Nº Pedido: {ticket.order_number}")
+    output.append(f"Factura: {ticket.invoice_number}")
+    output.append("-" * 60)
+    output.append("\nPRODUCTOS:")
+    output.append("-" * 60)
+    
+    for p in ticket.products:
+        unit_price = f"{p.unit_price:.2f}€" if p.unit_price else "-"
+        weight = f"({p.weight})" if p.weight else ""
+        output.append(f"{p.quantity:2d} {p.description:30s} {unit_price:>8s} {p.total_price:>6.2f}€ {weight}")
+    
+    output.append("-" * 60)
+    output.append(f"{'TOTAL:':>50s} {ticket.total:>6.2f}€")
+    output.append("\nDESGLOSE IVA:")
+    output.append("-" * 60)
+    
+    for rate, values in ticket.iva_breakdown.items():
+        output.append(f"{rate:>5s} - Base: {values['base']:>6.2f}€  Cuota: {values['cuota']:>6.2f}€")
+    
+    output.append("=" * 60)
+    
+    return '\n'.join(output)
+
+
+class PostgreSQLTicketStorage:
+    """Clase para guardar tickets en PostgreSQL"""
+    
+    def __init__(self, host='localhost', port=5432, database='mercadona', 
+                 user='postgres', password='postgres'):
+        """
+        Inicializa la conexión a PostgreSQL
+        
+        Args:
+            host: Host de la base de datos
+            port: Puerto de la base de datos
+            database: Nombre de la base de datos
+            user: Usuario de la base de datos
+            password: Contraseña del usuario
+        """
+        self.connection_params = {
+            'host': host,
+            'port': port,
+            'database': database,
+            'user': user,
+            'password': password
+        }
+    
+    @contextmanager
+    def get_connection(self):
+        """Context manager para conexiones a la BD"""
+        conn = psycopg2.connect(**self.connection_params)
+        try:
+            yield conn
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+    
+    def create_tables(self):
+        """Crea las tablas necesarias en la base de datos"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Tabla de tiendas
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tiendas (
+                    id SERIAL PRIMARY KEY,
+                    nombre VARCHAR(200) NOT NULL,
+                    cif VARCHAR(20) UNIQUE NOT NULL,
+                    direccion TEXT,
+                    codigo_postal VARCHAR(10),
+                    ciudad VARCHAR(100),
+                    telefono VARCHAR(20),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Tabla de tickets
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id SERIAL PRIMARY KEY,
+                    tienda_id INTEGER REFERENCES tiendas(id),
+                    numero_pedido VARCHAR(50),
+                    numero_factura VARCHAR(50) UNIQUE,
+                    fecha_compra DATE NOT NULL,
+                    hora_compra TIME NOT NULL,
+                    total DECIMAL(10,2) NOT NULL,
+                    metodo_pago VARCHAR(50),
+                    iva_4_base DECIMAL(10,2),
+                    iva_4_cuota DECIMAL(10,2),
+                    iva_10_base DECIMAL(10,2),
+                    iva_10_cuota DECIMAL(10,2),
+                    iva_21_base DECIMAL(10,2),
+                    iva_21_cuota DECIMAL(10,2),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Tabla de productos
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS productos (
+                    id SERIAL PRIMARY KEY,
+                    ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+                    cantidad INTEGER NOT NULL,
+                    descripcion VARCHAR(200) NOT NULL,
+                    precio_unitario DECIMAL(10,2),
+                    precio_total DECIMAL(10,2) NOT NULL,
+                    peso VARCHAR(50),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # ===== NUEVA: Tabla de tracking de procesamiento =====
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processing_log (
+                    id SERIAL PRIMARY KEY,
+                    gmail_message_id VARCHAR(100) UNIQUE NOT NULL,
+                    pdf_filename VARCHAR(500),
+                    pdf_hash VARCHAR(64),
+                    status VARCHAR(20) NOT NULL,
+                    attempts INTEGER DEFAULT 0,
+                    last_attempt TIMESTAMP,
+                    error_stage VARCHAR(50),
+                    error_message TEXT,
+                    error_traceback TEXT,
+                    pdf_path TEXT,
+                    extracted_text_path TEXT,
+                    ticket_id INTEGER REFERENCES tickets(id),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    metadata JSONB
+                )
+            """)
+            
+            # ===== NUEVA: Tabla de backups de archivos =====
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS file_backups (
+                    id SERIAL PRIMARY KEY,
+                    processing_log_id INTEGER REFERENCES processing_log(id),
+                    file_type VARCHAR(20) NOT NULL,
+                    file_path TEXT NOT NULL,
+                    file_hash VARCHAR(64),
+                    file_size INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Índices para mejorar búsquedas
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tickets_fecha 
+                ON tickets(fecha_compra)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_productos_ticket 
+                ON productos(ticket_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_productos_descripcion 
+                ON productos(descripcion)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_processing_status 
+                ON processing_log(status)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_processing_message_id 
+                ON processing_log(gmail_message_id)
+            """)
+            
+            logger.info("✓ Tablas creadas exitosamente")
+            print("✓ Tablas creadas exitosamente")
+    
+    def start_processing(self, message_id: str, pdf_filename: str, 
+                        pdf_hash: str, pdf_path: str) -> int:
+        """
+        Registra el inicio del procesamiento de un ticket
+        
+        Returns:
+            ID del registro de procesamiento
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO processing_log (
+                    gmail_message_id, pdf_filename, pdf_hash, status, 
+                    attempts, last_attempt, pdf_path
+                )
+                VALUES (%s, %s, %s, %s, 1, NOW(), %s)
+                ON CONFLICT (gmail_message_id) DO UPDATE SET
+                    attempts = processing_log.attempts + 1,
+                    last_attempt = NOW(),
+                    status = EXCLUDED.status
+                RETURNING id
+            """, (message_id, pdf_filename, pdf_hash, 
+                  ProcessingStatus.PENDING.value, pdf_path))
+            
+            processing_id = cursor.fetchone()[0]
+            logger.info(f"Iniciado procesamiento ID: {processing_id} para mensaje {message_id}")
+            return processing_id
+    
+    def update_processing_status(self, processing_id: int, status: ProcessingStatus,
+                                error_stage: str = None, error_message: str = None,
+                                error_traceback: str = None, ticket_id: int = None,
+                                extracted_text_path: str = None):
+        """Actualiza el estado de procesamiento"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            completed_at = datetime.now() if status == ProcessingStatus.COMPLETED else None
+            
+            cursor.execute("""
+                UPDATE processing_log
+                SET status = %s,
+                    error_stage = %s,
+                    error_message = %s,
+                    error_traceback = %s,
+                    ticket_id = %s,
+                    extracted_text_path = %s,
+                    completed_at = %s
+                WHERE id = %s
+            """, (status.value, error_stage, error_message, error_traceback,
+                  ticket_id, extracted_text_path, completed_at, processing_id))
+            
+            logger.info(f"Actualizado procesamiento {processing_id} a estado: {status.value}")
+    
+    def get_failed_processings(self, max_attempts: int = 3) -> List[dict]:
+        """Obtiene procesamiento fallidos para reintentar"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, gmail_message_id, pdf_filename, pdf_path, 
+                       attempts, error_message
+                FROM processing_log
+                WHERE status IN (%s, %s)
+                AND attempts < %s
+                ORDER BY last_attempt DESC
+            """, (ProcessingStatus.FAILED.value, ProcessingStatus.RETRY.value, max_attempts))
+            
+            return [
+                {
+                    'id': row[0],
+                    'message_id': row[1],
+                    'pdf_filename': row[2],
+                    'pdf_path': row[3],
+                    'attempts': row[4],
+                    'error_message': row[5]
+                }
+                for row in cursor.fetchall()
+            ]
+    
+    def register_file_backup(self, processing_id: int, file_type: str,
+                            file_path: str, file_hash: str, file_size: int):
+        """Registra un backup de archivo"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO file_backups (
+                    processing_log_id, file_type, file_path, 
+                    file_hash, file_size
+                )
+                VALUES (%s, %s, %s, %s, %s)
+            """, (processing_id, file_type, file_path, file_hash, file_size))
+            
+            logger.debug(f"Registrado backup: {file_type} - {file_path}")
+    
+    def validate_ticket(self, ticket: TicketData) -> tuple[bool, List[str]]:
+        """
+        Valida un ticket antes de guardarlo
+        
+        Returns:
+            (es_valido, lista_de_errores)
+        """
+        errors = []
+        
+        # Validaciones básicas
+        if not ticket.total or ticket.total <= 0:
+            errors.append("Total inválido o cero")
+        
+        if not ticket.products or len(ticket.products) == 0:
+            errors.append("Sin productos")
+        
+        if not ticket.date:
+            errors.append("Sin fecha")
+        
+        if not ticket.invoice_number:
+            errors.append("Sin número de factura")
+        
+        # Validar que la suma de productos coincida con el total
+        suma_productos = sum(p.total_price for p in ticket.products)
+        if abs(suma_productos - ticket.total) > 0.5:  # Tolerancia de 0.5€
+            errors.append(f"Suma de productos ({suma_productos:.2f}€) no coincide con total ({ticket.total:.2f}€)")
+        
+        # Validar productos
+        for i, p in enumerate(ticket.products):
+            if not p.description:
+                errors.append(f"Producto {i+1} sin descripción")
+            if p.total_price <= 0:
+                errors.append(f"Producto {i+1} con precio inválido")
+        
+        is_valid = len(errors) == 0
+        
+        if not is_valid:
+            logger.warning(f"Ticket no válido: {', '.join(errors)}")
+        
+        return is_valid, errors
+    
+    def save_ticket(self, ticket: TicketData) -> int:
+        """
+        Guarda un ticket completo en la base de datos con validación
+        
+        Args:
+            ticket: Objeto TicketData con la información del ticket
+            
+        Returns:
+            ID del ticket guardado
+            
+        Raises:
+            ValueError: Si el ticket no es válido
+            Exception: Si hay error al guardar
+        """
+        # Validar ticket primero
+        is_valid, errors = self.validate_ticket(ticket)
+        if not is_valid:
+            error_msg = f"Ticket inválido: {'; '.join(errors)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # 1. Insertar o obtener tienda
+                cursor.execute("""
+                    INSERT INTO tiendas (nombre, cif, direccion, codigo_postal, ciudad, telefono)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (cif) DO UPDATE SET
+                        direccion = EXCLUDED.direccion,
+                        codigo_postal = EXCLUDED.codigo_postal,
+                        ciudad = EXCLUDED.ciudad,
+                        telefono = EXCLUDED.telefono
+                    RETURNING id
+                """, (
+                    ticket.store_name,
+                    ticket.cif,
+                    ticket.address,
+                    ticket.postal_code,
+                    ticket.city,
+                    ticket.phone
+                ))
+                tienda_id = cursor.fetchone()[0]
+                
+                # 2. Preparar datos de IVA
+                iva_data = {
+                    '4%': {'base': None, 'cuota': None},
+                    '10%': {'base': None, 'cuota': None},
+                    '21%': {'base': None, 'cuota': None}
+                }
+                iva_data.update(ticket.iva_breakdown)
+                
+                # 3. Insertar ticket
+                cursor.execute("""
+                    INSERT INTO tickets (
+                        tienda_id, numero_pedido, numero_factura, fecha_compra, 
+                        hora_compra, total, metodo_pago,
+                        iva_4_base, iva_4_cuota,
+                        iva_10_base, iva_10_cuota,
+                        iva_21_base, iva_21_cuota
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (numero_factura) DO NOTHING
+                    RETURNING id
+                """, (
+                    tienda_id,
+                    ticket.order_number,
+                    ticket.invoice_number,
+                    ticket.date,
+                    ticket.time,
+                    ticket.total,
+                    ticket.payment_method,
+                    iva_data['4%']['base'],
+                    iva_data['4%']['cuota'],
+                    iva_data['10%']['base'],
+                    iva_data['10%']['cuota'],
+                    iva_data['21%']['base'],
+                    iva_data['21%']['cuota']
+                ))
+                
+                result = cursor.fetchone()
+                if result is None:
+                    # El ticket ya existe (conflicto con numero_factura)
+                    cursor.execute("""
+                        SELECT id FROM tickets WHERE numero_factura = %s
+                    """, (ticket.invoice_number,))
+                    ticket_id = cursor.fetchone()[0]
+                    logger.warning(f"Ticket duplicado detectado: factura {ticket.invoice_number}, ID {ticket_id}")
+                    return ticket_id
+                
+                ticket_id = result[0]
+                
+                # 4. Insertar productos
+                productos_data = [
+                    (
+                        ticket_id,
+                        p.quantity,
+                        p.description,
+                        p.unit_price,
+                        p.total_price,
+                        p.weight
+                    )
+                    for p in ticket.products
+                ]
+                
+                execute_values(cursor, """
+                    INSERT INTO productos (
+                        ticket_id, cantidad, descripcion, precio_unitario, 
+                        precio_total, peso
+                    )
+                    VALUES %s
+                """, productos_data)
+                
+                logger.info(f"✓ Ticket guardado - ID: {ticket_id}, Factura: {ticket.invoice_number}, Productos: {len(productos_data)}")
+                print(f"✓ Ticket guardado con ID: {ticket_id}")
+                print(f"  - Tienda ID: {tienda_id}")
+                print(f"  - Productos guardados: {len(productos_data)}")
+                
+                return ticket_id
+                
+            except Exception as e:
+                logger.error(f"Error guardando ticket: {e}")
+                logger.error(traceback.format_exc())
+                raise
+    
+    def get_ticket(self, ticket_id: int) -> Optional[dict]:
+        """Obtiene un ticket por su ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    t.id, t.numero_pedido, t.numero_factura,
+                    t.fecha_compra, t.hora_compra, t.total, t.metodo_pago,
+                    ti.nombre, ti.cif, ti.direccion, ti.ciudad
+                FROM tickets t
+                JOIN tiendas ti ON t.tienda_id = ti.id
+                WHERE t.id = %s
+            """, (ticket_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            # Obtener productos
+            cursor.execute("""
+                SELECT cantidad, descripcion, precio_unitario, precio_total, peso
+                FROM productos
+                WHERE ticket_id = %s
+                ORDER BY id
+            """, (ticket_id,))
+            
+            productos = cursor.fetchall()
+            
+            return {
+                'id': row[0],
+                'numero_pedido': row[1],
+                'numero_factura': row[2],
+                'fecha': row[3],
+                'hora': row[4],
+                'total': float(row[5]),
+                'metodo_pago': row[6],
+                'tienda': {
+                    'nombre': row[7],
+                    'cif': row[8],
+                    'direccion': row[9],
+                    'ciudad': row[10]
+                },
+                'productos': [
+                    {
+                        'cantidad': p[0],
+                        'descripcion': p[1],
+                        'precio_unitario': float(p[2]) if p[2] else None,
+                        'precio_total': float(p[3]),
+                        'peso': p[4]
+                    }
+                    for p in productos
+                ]
+            }
+    
+    def get_tickets_by_date_range(self, fecha_inicio: str, fecha_fin: str) -> List[dict]:
+        """Obtiene tickets en un rango de fechas"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, numero_factura, fecha_compra, total
+                FROM tickets
+                WHERE fecha_compra BETWEEN %s AND %s
+                ORDER BY fecha_compra DESC
+            """, (fecha_inicio, fecha_fin))
+            
+            return [
+                {
+                    'id': row[0],
+                    'numero_factura': row[1],
+                    'fecha': row[2],
+                    'total': float(row[3])
+                }
+                for row in cursor.fetchall()
+            ]
+    
+    def get_total_gastado(self, fecha_inicio: str = None, fecha_fin: str = None) -> float:
+        """Calcula el total gastado en un periodo"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            if fecha_inicio and fecha_fin:
+                cursor.execute("""
+                    SELECT COALESCE(SUM(total), 0)
+                    FROM tickets
+                    WHERE fecha_compra BETWEEN %s AND %s
+                """, (fecha_inicio, fecha_fin))
+            else:
+                cursor.execute("SELECT COALESCE(SUM(total), 0) FROM tickets")
+            
+            return float(cursor.fetchone()[0])
+    
+    def get_productos_mas_comprados(self, limit: int = 10) -> List[dict]:
+        """Obtiene los productos más comprados"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    descripcion,
+                    COUNT(*) as veces_comprado,
+                    SUM(cantidad) as cantidad_total,
+                    ROUND(AVG(precio_total), 2) as precio_promedio,
+                    ROUND(SUM(precio_total), 2) as gasto_total
+                FROM productos
+                GROUP BY descripcion
+                ORDER BY veces_comprado DESC
+                LIMIT %s
+            """, (limit,))
+            
+            return [
+                {
+                    'producto': row[0],
+                    'veces_comprado': row[1],
+                    'cantidad_total': row[2],
+                    'precio_promedio': float(row[3]),
+                    'gasto_total': float(row[4])
+                }
+                for row in cursor.fetchall()
+            ]
+
+
+class EmailReporter:
+    """Genera y envía reportes de gastos por email"""
+    
+    SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+    
+    def __init__(self, credentials_file='credentials.json', token_file='token.pickle'):
+        """
+        Inicializa el reportero de emails
+        
+        Args:
+            credentials_file: Archivo de credenciales de Google Cloud
+            token_file: Archivo del token de autenticación
+        """
+        self.credentials_file = credentials_file
+        self.token_file = token_file
+        self.service = None
+    
+    def authenticate(self):
+        """Autentica con Gmail para envío de correos"""
+        creds = None
+        
+        if os.path.exists(self.token_file):
+            with open(self.token_file, 'rb') as token:
+                creds = pickle.load(token)
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_file, self.SCOPES)
+                creds = flow.run_local_server(port=0)
+            
+            with open(self.token_file, 'wb') as token:
+                pickle.dump(creds, token)
+        
+        self.service = build('gmail', 'v1', credentials=creds)
+        logger.info("✓ Autenticado con Gmail para envío de correos")
+        return self.service
+    
+    def generate_weekly_report(self, db: PostgreSQLTicketStorage) -> dict:
+        """Genera reporte semanal de gastos"""
+        hoy = datetime.now()
+        hace_7_dias = hoy - timedelta(days=7)
+        
+        # Obtener datos
+        total_semana = db.get_total_gastado(
+            hace_7_dias.strftime('%Y-%m-%d'),
+            hoy.strftime('%Y-%m-%d')
+        )
+        
+        tickets_semana = db.get_tickets_by_date_range(
+            hace_7_dias.strftime('%Y-%m-%d'),
+            hoy.strftime('%Y-%m-%d')
+        )
+        
+        # Productos más comprados de la semana
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    p.descripcion,
+                    SUM(p.cantidad) as cantidad_total,
+                    ROUND(SUM(p.precio_total), 2) as gasto_total
+                FROM productos p
+                JOIN tickets t ON p.ticket_id = t.id
+                WHERE t.fecha_compra BETWEEN %s AND %s
+                GROUP BY p.descripcion
+                ORDER BY gasto_total DESC
+                LIMIT 5
+            """, (hace_7_dias.date(), hoy.date()))
+            
+            top_productos = [
+                {
+                    'descripcion': row[0],
+                    'cantidad': row[1],
+                    'gasto': float(row[2])
+                }
+                for row in cursor.fetchall()
+            ]
+        
+        # Comparar con semana anterior
+        hace_14_dias = hoy - timedelta(days=14)
+        total_semana_anterior = db.get_total_gastado(
+            hace_14_dias.strftime('%Y-%m-%d'),
+            hace_7_dias.strftime('%Y-%m-%d')
+        )
+        
+        diferencia = total_semana - total_semana_anterior
+        porcentaje = (diferencia / total_semana_anterior * 100) if total_semana_anterior > 0 else 0
+        
+        return {
+            'periodo': f"{hace_7_dias.strftime('%d/%m/%Y')} - {hoy.strftime('%d/%m/%Y')}",
+            'total': total_semana,
+            'num_tickets': len(tickets_semana),
+            'promedio_ticket': total_semana / len(tickets_semana) if tickets_semana else 0,
+            'top_productos': top_productos,
+            'comparacion': {
+                'total_anterior': total_semana_anterior,
+                'diferencia': diferencia,
+                'porcentaje': porcentaje
+            }
+        }
+    
+    def generate_monthly_report(self, db: PostgreSQLTicketStorage) -> dict:
+        """Genera reporte mensual de gastos"""
+        hoy = datetime.now()
+        inicio_mes = hoy.replace(day=1)
+        
+        # Último día del mes
+        ultimo_dia = calendar.monthrange(hoy.year, hoy.month)[1]
+        fin_mes = hoy.replace(day=ultimo_dia)
+        
+        # Obtener datos del mes actual
+        total_mes = db.get_total_gastado(
+            inicio_mes.strftime('%Y-%m-%d'),
+            fin_mes.strftime('%Y-%m-%d')
+        )
+        
+        tickets_mes = db.get_tickets_by_date_range(
+            inicio_mes.strftime('%Y-%m-%d'),
+            fin_mes.strftime('%Y-%m-%d')
+        )
+        
+        # Top productos del mes
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Productos más comprados
+            cursor.execute("""
+                SELECT 
+                    p.descripcion,
+                    SUM(p.cantidad) as cantidad_total,
+                    COUNT(DISTINCT t.id) as veces_comprado,
+                    ROUND(SUM(p.precio_total), 2) as gasto_total
+                FROM productos p
+                JOIN tickets t ON p.ticket_id = t.id
+                WHERE t.fecha_compra BETWEEN %s AND %s
+                GROUP BY p.descripcion
+                ORDER BY gasto_total DESC
+                LIMIT 10
+            """, (inicio_mes.date(), fin_mes.date()))
+            
+            top_productos = [
+                {
+                    'descripcion': row[0],
+                    'cantidad': row[1],
+                    'veces': row[2],
+                    'gasto': float(row[3])
+                }
+                for row in cursor.fetchall()
+            ]
+            
+            # Gastos por día de la semana
+            cursor.execute("""
+                SELECT 
+                    EXTRACT(DOW FROM fecha_compra) as dia_semana,
+                    COUNT(*) as num_compras,
+                    ROUND(SUM(total), 2) as total_gastado
+                FROM tickets
+                WHERE fecha_compra BETWEEN %s AND %s
+                GROUP BY EXTRACT(DOW FROM fecha_compra)
+                ORDER BY dia_semana
+            """, (inicio_mes.date(), fin_mes.date()))
+            
+            dias_nombres = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
+            gastos_por_dia = {}
+            for row in cursor.fetchall():
+                dia_num = int(row[0])
+                gastos_por_dia[dias_nombres[dia_num]] = {
+                    'compras': row[1],
+                    'total': float(row[2])
+                }
+        
+        # Comparar con mes anterior
+        if hoy.month == 1:
+            mes_anterior = hoy.replace(year=hoy.year-1, month=12, day=1)
+        else:
+            mes_anterior = hoy.replace(month=hoy.month-1, day=1)
+        
+        ultimo_dia_anterior = calendar.monthrange(mes_anterior.year, mes_anterior.month)[1]
+        fin_mes_anterior = mes_anterior.replace(day=ultimo_dia_anterior)
+        
+        total_mes_anterior = db.get_total_gastado(
+            mes_anterior.strftime('%Y-%m-%d'),
+            fin_mes_anterior.strftime('%Y-%m-%d')
+        )
+        
+        diferencia = total_mes - total_mes_anterior
+        porcentaje = (diferencia / total_mes_anterior * 100) if total_mes_anterior > 0 else 0
+        
+        return {
+            'mes': hoy.strftime('%B %Y'),
+            'periodo': f"{inicio_mes.strftime('%d/%m/%Y')} - {hoy.strftime('%d/%m/%Y')}",
+            'total': total_mes,
+            'num_tickets': len(tickets_mes),
+            'promedio_ticket': total_mes / len(tickets_mes) if tickets_mes else 0,
+            'top_productos': top_productos,
+            'gastos_por_dia': gastos_por_dia,
+            'comparacion': {
+                'mes_anterior': mes_anterior.strftime('%B'),
+                'total_anterior': total_mes_anterior,
+                'diferencia': diferencia,
+                'porcentaje': porcentaje
+            }
+        }
+    
+    def format_weekly_email_html(self, report: dict) -> str:
+        """Genera HTML para email semanal"""
+        
+        # Emoji para tendencia
+        if report['comparacion']['diferencia'] > 0:
+            tendencia = f"📈 +{report['comparacion']['porcentaje']:.1f}%"
+            color_tendencia = "#e74c3c"
+        elif report['comparacion']['diferencia'] < 0:
+            tendencia = f"📉 {report['comparacion']['porcentaje']:.1f}%"
+            color_tendencia = "#27ae60"
+        else:
+            tendencia = "➡️ 0%"
+            color_tendencia = "#95a5a6"
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background-color: #f5f5f5;
+                }}
+                .container {{
+                    background-color: white;
+                    border-radius: 10px;
+                    padding: 30px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }}
+                .header {{
+                    text-align: center;
+                    border-bottom: 3px solid #3498db;
+                    padding-bottom: 20px;
+                    margin-bottom: 30px;
+                }}
+                .header h1 {{
+                    color: #2c3e50;
+                    margin: 0;
+                }}
+                .header p {{
+                    color: #7f8c8d;
+                    margin: 5px 0 0 0;
+                }}
+                .metric {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 25px;
+                    border-radius: 10px;
+                    text-align: center;
+                    margin: 20px 0;
+                }}
+                .metric h2 {{
+                    margin: 0;
+                    font-size: 42px;
+                    font-weight: bold;
+                }}
+                .metric p {{
+                    margin: 5px 0 0 0;
+                    opacity: 0.9;
+                }}
+                .stats {{
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 15px;
+                    margin: 20px 0;
+                }}
+                .stat-box {{
+                    background-color: #ecf0f1;
+                    padding: 15px;
+                    border-radius: 8px;
+                    text-align: center;
+                }}
+                .stat-box h3 {{
+                    margin: 0;
+                    font-size: 24px;
+                    color: #2c3e50;
+                }}
+                .stat-box p {{
+                    margin: 5px 0 0 0;
+                    color: #7f8c8d;
+                    font-size: 14px;
+                }}
+                .comparison {{
+                    background-color: #fff3cd;
+                    border-left: 4px solid {color_tendencia};
+                    padding: 15px;
+                    margin: 20px 0;
+                    border-radius: 5px;
+                }}
+                .comparison strong {{
+                    color: {color_tendencia};
+                }}
+                .products {{
+                    margin: 20px 0;
+                }}
+                .products h3 {{
+                    color: #2c3e50;
+                    border-bottom: 2px solid #3498db;
+                    padding-bottom: 10px;
+                }}
+                .product-item {{
+                    background-color: #f8f9fa;
+                    padding: 12px;
+                    margin: 8px 0;
+                    border-radius: 5px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }}
+                .product-name {{
+                    font-weight: 500;
+                    color: #2c3e50;
+                }}
+                .product-amount {{
+                    color: #e74c3c;
+                    font-weight: bold;
+                    font-size: 16px;
+                }}
+                .footer {{
+                    text-align: center;
+                    margin-top: 30px;
+                    padding-top: 20px;
+                    border-top: 1px solid #ecf0f1;
+                    color: #7f8c8d;
+                    font-size: 12px;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🛒 Resumen Semanal Mercadona</h1>
+                    <p>{report['periodo']}</p>
+                </div>
+                
+                <div class="metric">
+                    <h2>{report['total']:.2f}€</h2>
+                    <p>Total gastado esta semana</p>
+                </div>
+                
+                <div class="stats">
+                    <div class="stat-box">
+                        <h3>{report['num_tickets']}</h3>
+                        <p>Compras realizadas</p>
+                    </div>
+                    <div class="stat-box">
+                        <h3>{report['promedio_ticket']:.2f}€</h3>
+                        <p>Ticket promedio</p>
+                    </div>
+                </div>
+                
+                <div class="comparison">
+                    <strong>{tendencia}</strong> comparado con la semana anterior
+                    ({report['comparacion']['total_anterior']:.2f}€)
+                </div>
+                
+                <div class="products">
+                    <h3>🏆 Top 5 Productos de la Semana</h3>
+        """
+        
+        for i, prod in enumerate(report['top_productos'], 1):
+            html += f"""
+                    <div class="product-item">
+                        <span class="product-name">
+                            {i}. {prod['descripcion']} 
+                            <span style="color: #7f8c8d; font-size: 14px;">x{prod['cantidad']}</span>
+                        </span>
+                        <span class="product-amount">{prod['gasto']:.2f}€</span>
+                    </div>
+            """
+        
+        html += """
+                </div>
+                
+                <div class="footer">
+                    <p>📊 Reporte generado automáticamente</p>
+                    <p>Sistema de Gestión de Tickets Mercadona</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
+    
+    def format_monthly_email_html(self, report: dict) -> str:
+        """Genera HTML para email mensual"""
+        
+        # Emoji para tendencia
+        if report['comparacion']['diferencia'] > 0:
+            tendencia = f"📈 +{report['comparacion']['porcentaje']:.1f}%"
+            color_tendencia = "#e74c3c"
+        elif report['comparacion']['diferencia'] < 0:
+            tendencia = f"📉 {report['comparacion']['porcentaje']:.1f}%"
+            color_tendencia = "#27ae60"
+        else:
+            tendencia = "➡️ 0%"
+            color_tendencia = "#95a5a6"
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 700px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background-color: #f5f5f5;
+                }}
+                .container {{
+                    background-color: white;
+                    border-radius: 10px;
+                    padding: 40px;
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+                }}
+                .header {{
+                    text-align: center;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    margin: -40px -40px 30px -40px;
+                }}
+                .header h1 {{
+                    margin: 0;
+                    font-size: 32px;
+                }}
+                .header p {{
+                    margin: 10px 0 0 0;
+                    opacity: 0.9;
+                    font-size: 18px;
+                }}
+                .metric-big {{
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                    color: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    text-align: center;
+                    margin: 20px 0;
+                }}
+                .metric-big h2 {{
+                    margin: 0;
+                    font-size: 48px;
+                    font-weight: bold;
+                }}
+                .metric-big p {{
+                    margin: 10px 0 0 0;
+                    opacity: 0.9;
+                    font-size: 16px;
+                }}
+                .stats-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 15px;
+                    margin: 20px 0;
+                }}
+                .stat-card {{
+                    background-color: #f8f9fa;
+                    padding: 20px;
+                    border-radius: 8px;
+                    text-align: center;
+                    border: 2px solid #e9ecef;
+                }}
+                .stat-card h3 {{
+                    margin: 0;
+                    font-size: 28px;
+                    color: #667eea;
+                }}
+                .stat-card p {{
+                    margin: 8px 0 0 0;
+                    color: #6c757d;
+                    font-size: 13px;
+                }}
+                .comparison {{
+                    background: linear-gradient(to right, #ffeaa7, #fdcb6e);
+                    border-left: 5px solid {color_tendencia};
+                    padding: 20px;
+                    margin: 25px 0;
+                    border-radius: 8px;
+                }}
+                .comparison h3 {{
+                    margin: 0 0 10px 0;
+                    color: #2d3436;
+                }}
+                .comparison strong {{
+                    color: {color_tendencia};
+                    font-size: 24px;
+                }}
+                .section {{
+                    margin: 30px 0;
+                }}
+                .section h3 {{
+                    color: #2c3e50;
+                    border-bottom: 3px solid #667eea;
+                    padding-bottom: 10px;
+                    margin-bottom: 20px;
+                }}
+                .product-list {{
+                    display: grid;
+                    gap: 10px;
+                }}
+                .product-card {{
+                    background: linear-gradient(to right, #f8f9fa, #ffffff);
+                    padding: 15px;
+                    border-radius: 8px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    border-left: 4px solid #667eea;
+                }}
+                .product-info {{
+                    flex-grow: 1;
+                }}
+                .product-rank {{
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #667eea;
+                    margin-right: 15px;
+                }}
+                .product-name {{
+                    font-weight: 600;
+                    color: #2c3e50;
+                    font-size: 16px;
+                }}
+                .product-details {{
+                    color: #7f8c8d;
+                    font-size: 13px;
+                    margin-top: 5px;
+                }}
+                .product-amount {{
+                    color: #e74c3c;
+                    font-weight: bold;
+                    font-size: 20px;
+                }}
+                .day-stats {{
+                    display: grid;
+                    grid-template-columns: repeat(7, 1fr);
+                    gap: 10px;
+                    margin: 20px 0;
+                }}
+                .day-card {{
+                    background-color: #ecf0f1;
+                    padding: 15px 10px;
+                    border-radius: 8px;
+                    text-align: center;
+                }}
+                .day-card strong {{
+                    display: block;
+                    color: #2c3e50;
+                    font-size: 12px;
+                    margin-bottom: 8px;
+                }}
+                .day-card .amount {{
+                    color: #e74c3c;
+                    font-weight: bold;
+                    font-size: 16px;
+                }}
+                .day-card .count {{
+                    color: #7f8c8d;
+                    font-size: 11px;
+                    margin-top: 5px;
+                }}
+                .footer {{
+                    text-align: center;
+                    margin-top: 40px;
+                    padding-top: 20px;
+                    border-top: 2px solid #ecf0f1;
+                    color: #7f8c8d;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📊 Resumen Mensual Mercadona</h1>
+                    <p>{report['mes']}</p>
+                </div>
+                
+                <div class="metric-big">
+                    <h2>{report['total']:.2f}€</h2>
+                    <p>Total gastado este mes</p>
+                </div>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>{report['num_tickets']}</h3>
+                        <p>Compras realizadas</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>{report['promedio_ticket']:.2f}€</h3>
+                        <p>Ticket promedio</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>{len(report['top_productos'])}</h3>
+                        <p>Productos únicos</p>
+                    </div>
+                </div>
+                
+                <div class="comparison">
+                    <h3>Comparación con {report['comparacion']['mes_anterior']}</h3>
+                    <strong>{tendencia}</strong>
+                    <span style="color: #2d3436; margin-left: 10px;">
+                        ({report['comparacion']['total_anterior']:.2f}€ → {report['total']:.2f}€)
+                    </span>
+                </div>
+                
+                <div class="section">
+                    <h3>🏆 Top 10 Productos del Mes</h3>
+                    <div class="product-list">
+        """
+        
+        for i, prod in enumerate(report['top_productos'], 1):
+            html += f"""
+                        <div class="product-card">
+                            <span class="product-rank">{i}</span>
+                            <div class="product-info">
+                                <div class="product-name">{prod['descripcion']}</div>
+                                <div class="product-details">
+                                    Comprado {prod['veces']} veces • Total: {prod['cantidad']} unidades
+                                </div>
+                            </div>
+                            <span class="product-amount">{prod['gasto']:.2f}€</span>
+                        </div>
+            """
+        
+        html += """
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h3>📅 Gastos por Día de la Semana</h3>
+                    <div class="day-stats">
+        """
+        
+        dias_orden = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+        for dia in dias_orden:
+            if dia in report['gastos_por_dia']:
+                datos = report['gastos_por_dia'][dia]
+                html += f"""
+                        <div class="day-card">
+                            <strong>{dia}</strong>
+                            <div class="amount">{datos['total']:.0f}€</div>
+                            <div class="count">{datos['compras']} compras</div>
+                        </div>
+                """
+            else:
+                html += f"""
+                        <div class="day-card" style="opacity: 0.5;">
+                            <strong>{dia}</strong>
+                            <div class="amount">0€</div>
+                            <div class="count">0 compras</div>
+                        </div>
+                """
+        
+        html += """
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    <p style="font-size: 16px; font-weight: bold; color: #667eea;">
+                        📊 Reporte generado automáticamente
+                    </p>
+                    <p>Sistema de Gestión de Tickets Mercadona</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
+    
+    def send_email(self, to: str, subject: str, html_content: str) -> bool:
+        """
+        Envía un email con HTML
+        
+        Args:
+            to: Destinatario
+            subject: Asunto
+            html_content: Contenido HTML
+            
+        Returns:
+            True si se envió correctamente
+        """
+        if not self.service:
+            self.authenticate()
+        
+        try:
+            message = MIMEMultipart('alternative')
+            message['to'] = to
+            message['subject'] = subject
+            
+            # Añadir contenido HTML
+            html_part = MIMEText(html_content, 'html', 'utf-8')
+            message.attach(html_part)
+            
+            # Codificar y enviar
+            raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+            
+            self.service.users().messages().send(
+                userId='me',
+                body={'raw': raw_message}
+            ).execute()
+            
+            logger.info(f"✓ Email enviado a {to}: {subject}")
+            print(f"✓ Email enviado exitosamente a {to}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error enviando email: {e}")
+            logger.error(traceback.format_exc())
+            print(f"✗ Error enviando email: {e}")
+            return False
+    
+    def send_weekly_report(self, db: PostgreSQLTicketStorage, to: str) -> bool:
+        """Genera y envía reporte semanal"""
+        logger.info("Generando reporte semanal...")
+        print("\n📧 Generando reporte semanal...")
+        
+        report = self.generate_weekly_report(db)
+        html = self.format_weekly_email_html(report)
+        
+        subject = f"🛒 Resumen Semanal Mercadona - {report['total']:.2f}€"
+        
+        return self.send_email(to, subject, html)
+    
+    def send_monthly_report(self, db: PostgreSQLTicketStorage, to: str) -> bool:
+        """Genera y envía reporte mensual"""
+        logger.info("Generando reporte mensual...")
+        print("\n📧 Generando reporte mensual...")
+        
+        report = self.generate_monthly_report(db)
+        html = self.format_monthly_email_html(report)
+        
+        subject = f"📊 Resumen Mensual Mercadona - {report['mes']} - {report['total']:.2f}€"
+        
+        return self.send_email(to, subject, html)
+
+
+class GmailTicketProcessor:
+    """Procesa automáticamente tickets de Mercadona desde Gmail con control de errores robusto"""
+    
+    # Permisos necesarios para la API de Gmail
+    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',
+              'https://www.googleapis.com/auth/gmail.modify']
+    
+    def __init__(self, credentials_file='credentials.json', token_file='token.pickle',
+                 backup_dir='ticket_backups', max_retries=3):
+        """
+        Inicializa el procesador de Gmail
+        
+        Args:
+            credentials_file: Archivo de credenciales de Google Cloud
+            token_file: Archivo donde se guarda el token de autenticación
+            backup_dir: Directorio para backups de archivos
+            max_retries: Número máximo de reintentos por ticket
+        """
+        self.credentials_file = credentials_file
+        self.token_file = token_file
+        self.service = None
+        self.backup_dir = Path(backup_dir)
+        self.max_retries = max_retries
+        
+        # Crear directorios de backup
+        self.backup_dir.mkdir(exist_ok=True)
+        (self.backup_dir / 'pdfs').mkdir(exist_ok=True)
+        (self.backup_dir / 'text').mkdir(exist_ok=True)
+        (self.backup_dir / 'failed').mkdir(exist_ok=True)
+    
+    @staticmethod
+    def calculate_file_hash(filepath: str) -> str:
+        """Calcula hash SHA-256 de un archivo"""
+        sha256_hash = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    
+    def save_file_with_backup(self, content: bytes, filename: str, 
+                             subdir: str = 'pdfs') -> tuple[str, str, int]:
+        """
+        Guarda un archivo con backup seguro
+        
+        Returns:
+            (filepath, file_hash, file_size)
+        """
+        # Crear nombre único con timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_filename = f"{timestamp}_{filename}"
+        filepath = self.backup_dir / subdir / safe_filename
+        
+        # Guardar archivo
+        with open(filepath, 'wb') as f:
+            f.write(content)
+        
+        # Calcular hash y tamaño
+        file_hash = self.calculate_file_hash(str(filepath))
+        file_size = os.path.getsize(filepath)
+        
+        logger.info(f"Archivo guardado: {filepath} (hash: {file_hash[:8]}..., size: {file_size} bytes)")
+        
+        return str(filepath), file_hash, file_size
+    
+    def save_text_backup(self, text: str, processing_id: int, db_storage: PostgreSQLTicketStorage):
+        """Guarda backup del texto extraído"""
+        try:
+            filename = f"text_{processing_id}.txt"
+            filepath = self.backup_dir / 'text' / filename
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(text)
+            
+            file_hash = hashlib.sha256(text.encode()).hexdigest()
+            file_size = len(text.encode())
+            
+            db_storage.register_file_backup(
+                processing_id, 'text', str(filepath), file_hash, file_size
+            )
+            
+            db_storage.update_processing_status(
+                processing_id, 
+                ProcessingStatus.EXTRACTING,
+                extracted_text_path=str(filepath)
+            )
+            
+            logger.info(f"Texto guardado: {filepath}")
+            return str(filepath)
+            
+        except Exception as e:
+            logger.error(f"Error guardando texto: {e}")
+            return None
+    
+    def authenticate(self):
+        """Autentica con Gmail usando OAuth2"""
+        creds = None
+        
+        # Cargar token existente
+        if os.path.exists(self.token_file):
+            with open(self.token_file, 'rb') as token:
+                creds = pickle.load(token)
+        
+        # Si no hay credenciales válidas, autenticar
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_file, self.SCOPES)
+                creds = flow.run_local_server(port=0)
+            
+            # Guardar token para futuros usos
+            with open(self.token_file, 'wb') as token:
+                pickle.dump(creds, token)
+        
+        self.service = build('gmail', 'v1', credentials=creds)
+        print("✓ Autenticado con Gmail correctamente")
+        return self.service
+    
+    def search_mercadona_emails(self, query='from:noreply@mercadona.es has:attachment', 
+                                max_results=10, unread_only=True):
+        """
+        Busca correos de Mercadona con PDFs adjuntos
+        
+        Args:
+            query: Query de búsqueda de Gmail
+            max_results: Número máximo de resultados
+            unread_only: Solo correos no leídos
+            
+        Returns:
+            Lista de IDs de mensajes
+        """
+        if not self.service:
+            self.authenticate()
+        
+        if unread_only:
+            query += ' is:unread'
+        
+        try:
+            results = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=max_results
+            ).execute()
+            
+            messages = results.get('messages', [])
+            print(f"✓ Encontrados {len(messages)} correos de Mercadona")
+            return messages
+        
+        except Exception as e:
+            print(f"✗ Error al buscar correos: {e}")
+            return []
+    
+    def download_pdf_from_email(self, message_id, db_storage: PostgreSQLTicketStorage = None):
+        """
+        Descarga PDFs adjuntos de un correo con backup seguro
+        
+        Args:
+            message_id: ID del mensaje de Gmail
+            db_storage: Instancia de PostgreSQLTicketStorage para tracking
+            
+        Returns:
+            Lista de diccionarios con info de archivos descargados
+        """
+        if not self.service:
+            self.authenticate()
+        
+        downloaded_files = []
+        
+        try:
+            # Obtener mensaje completo
+            message = self.service.users().messages().get(
+                userId='me',
+                id=message_id,
+                format='full'
+            ).execute()
+            
+            # Buscar adjuntos
+            parts = message['payload'].get('parts', [])
+            
+            for part in parts:
+                if part.get('filename') and part['filename'].lower().endswith('.pdf'):
+                    attachment_id = part['body'].get('attachmentId')
+                    
+                    if attachment_id:
+                        try:
+                            # Descargar adjunto
+                            attachment = self.service.users().messages().attachments().get(
+                                userId='me',
+                                messageId=message_id,
+                                id=attachment_id
+                            ).execute()
+                            
+                            # Decodificar
+                            file_data = base64.urlsafe_b64decode(attachment['data'])
+                            
+                            # Guardar con backup
+                            filepath, file_hash, file_size = self.save_file_with_backup(
+                                file_data, part['filename'], 'pdfs'
+                            )
+                            
+                            # Registrar en BD si está disponible
+                            processing_id = None
+                            if db_storage:
+                                processing_id = db_storage.start_processing(
+                                    message_id, part['filename'], file_hash, filepath
+                                )
+                                
+                                db_storage.register_file_backup(
+                                    processing_id, 'pdf', filepath, file_hash, file_size
+                                )
+                            
+                            downloaded_files.append({
+                                'filename': part['filename'],
+                                'filepath': filepath,
+                                'hash': file_hash,
+                                'size': file_size,
+                                'processing_id': processing_id
+                            })
+                            
+                            logger.info(f"✓ Descargado: {part['filename']} ({file_size} bytes)")
+                            print(f"  ✓ Descargado: {part['filename']}")
+                            
+                        except Exception as e:
+                            logger.error(f"Error descargando adjunto: {e}")
+                            logger.error(traceback.format_exc())
+                            
+                            if db_storage and processing_id:
+                                db_storage.update_processing_status(
+                                    processing_id,
+                                    ProcessingStatus.FAILED,
+                                    error_stage='download',
+                                    error_message=str(e),
+                                    error_traceback=traceback.format_exc()
+                                )
+            
+            return downloaded_files
+        
+        except Exception as e:
+            logger.error(f"✗ Error al procesar mensaje {message_id}: {e}")
+            logger.error(traceback.format_exc())
+            return []
+    
+    def extract_text_from_pdf(self, pdf_path):
+        """
+        Extrae texto de un PDF
+        
+        Args:
+            pdf_path: Ruta al archivo PDF
+            
+        Returns:
+            Texto extraído del PDF
+        """
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                text = ""
+                for page in pdf.pages:
+                    text += page.extract_text() + "\n"
+                return text
+        except Exception as e:
+            print(f"✗ Error al extraer texto del PDF: {e}")
+            return None
+    
+    def mark_as_read(self, message_id):
+        """Marca un correo como leído"""
+        if not self.service:
+            self.authenticate()
+        
+        try:
+            self.service.users().messages().modify(
+                userId='me',
+                id=message_id,
+                body={'removeLabelIds': ['UNREAD']}
+            ).execute()
+            print(f"  ✓ Correo marcado como leído")
+        except Exception as e:
+            print(f"  ✗ Error al marcar como leído: {e}")
+    
+    def add_label(self, message_id, label_name='Mercadona/Procesado'):
+        """Añade una etiqueta al correo"""
+        if not self.service:
+            self.authenticate()
+        
+        try:
+            # Buscar o crear etiqueta
+            labels = self.service.users().labels().list(userId='me').execute()
+            label_id = None
+            
+            for label in labels.get('labels', []):
+                if label['name'] == label_name:
+                    label_id = label['id']
+                    break
+            
+            # Crear etiqueta si no existe
+            if not label_id:
+                label = self.service.users().labels().create(
+                    userId='me',
+                    body={
+                        'name': label_name,
+                        'labelListVisibility': 'labelShow',
+                        'messageListVisibility': 'show'
+                    }
+                ).execute()
+                label_id = label['id']
+            
+            # Añadir etiqueta
+            self.service.users().messages().modify(
+                userId='me',
+                id=message_id,
+                body={'addLabelIds': [label_id]}
+            ).execute()
+            print(f"  ✓ Etiqueta '{label_name}' añadida")
+        
+        except Exception as e:
+            print(f"  ✗ Error al añadir etiqueta: {e}")
+    
+    def process_all_tickets(self, db_storage: PostgreSQLTicketStorage = None,
+                           mark_as_read=True, add_label=True, delete_pdf=False,
+                           retry_failed=True):
+        """
+        Procesa todos los tickets de Mercadona en Gmail con control de errores robusto
+        
+        Args:
+            db_storage: Instancia de PostgreSQLTicketStorage para guardar en BD
+            mark_as_read: Marcar correos como leídos después de procesar
+            add_label: Añadir etiqueta a correos procesados
+            delete_pdf: Eliminar PDFs después de procesar (NO RECOMENDADO)
+            retry_failed: Reintentar tickets que fallaron anteriormente
+            
+        Returns:
+            Diccionario con estadísticas del procesamiento
+        """
+        stats = {
+            'correos_encontrados': 0,
+            'pdfs_descargados': 0,
+            'tickets_procesados': 0,
+            'tickets_guardados': 0,
+            'tickets_duplicados': 0,
+            'tickets_invalidos': 0,
+            'reintentos_exitosos': 0,
+            'errores': 0,
+            'errores_detalle': []
+        }
+        
+        # Autenticar
+        self.authenticate()
+        
+        # Primero, reintentar tickets fallidos si se solicita
+        if retry_failed and db_storage:
+            logger.info("Verificando tickets fallidos para reintentar...")
+            failed = db_storage.get_failed_processings(self.max_retries)
+            
+            if failed:
+                logger.info(f"Encontrados {len(failed)} tickets fallidos para reintentar")
+                print(f"\n🔄 Reintentando {len(failed)} tickets fallidos...")
+                
+                for f in failed:
+                    try:
+                        self.process_single_pdf(
+                            f['pdf_path'],
+                            f['message_id'],
+                            db_storage,
+                            processing_id=f['id']
+                        )
+                        stats['reintentos_exitosos'] += 1
+                    except Exception as e:
+                        logger.error(f"Error en reintento: {e}")
+                        stats['errores'] += 1
+        
+        # Buscar correos nuevos
+        messages = self.search_mercadona_emails(unread_only=True)
+        stats['correos_encontrados'] = len(messages)
+        
+        if not messages:
+            logger.info("📭 No hay correos nuevos de Mercadona")
+            print("\n📭 No hay correos nuevos de Mercadona")
+            return stats
+        
+        logger.info(f"📧 Procesando {len(messages)} correos nuevos...")
+        print(f"\n📧 Procesando {len(messages)} correos...")
+        print("="*60)
+        
+        for msg in messages:
+            message_id = msg['id']
+            logger.info(f"Procesando correo ID: {message_id}")
+            print(f"\n📨 Procesando correo ID: {message_id}")
+            
+            try:
+                # Descargar PDFs con tracking
+                pdf_files = self.download_pdf_from_email(message_id, db_storage)
+                stats['pdfs_descargados'] += len(pdf_files)
+                
+                # Procesar cada PDF
+                for pdf_info in pdf_files:
+                    logger.info(f"Procesando PDF: {pdf_info['filename']}")
+                    print(f"\n  📄 Procesando: {pdf_info['filename']}")
+                    
+                    result = self.process_single_pdf(
+                        pdf_info['filepath'],
+                        message_id,
+                        db_storage,
+                        processing_id=pdf_info['processing_id']
+                    )
+                    
+                    if result['status'] == 'success':
+                        stats['tickets_procesados'] += 1
+                        stats['tickets_guardados'] += 1
+                    elif result['status'] == 'duplicate':
+                        stats['tickets_duplicados'] += 1
+                    elif result['status'] == 'invalid':
+                        stats['tickets_invalidos'] += 1
+                    elif result['status'] == 'error':
+                        stats['errores'] += 1
+                        stats['errores_detalle'].append({
+                            'file': pdf_info['filename'],
+                            'error': result['error']
+                        })
+                    
+                    # Eliminar PDF si se solicita (NO RECOMENDADO)
+                    if delete_pdf and result['status'] == 'success':
+                        try:
+                            os.remove(pdf_info['filepath'])
+                            logger.info(f"PDF eliminado: {pdf_info['filepath']}")
+                        except Exception as e:
+                            logger.warning(f"No se pudo eliminar PDF: {e}")
+                
+                # Marcar como leído
+                if mark_as_read:
+                    self.mark_as_read(message_id)
+                
+                # Añadir etiqueta
+                if add_label:
+                    self.add_label(message_id)
+                    
+            except Exception as e:
+                logger.error(f"Error procesando correo {message_id}: {e}")
+                logger.error(traceback.format_exc())
+                stats['errores'] += 1
+                stats['errores_detalle'].append({
+                    'message_id': message_id,
+                    'error': str(e)
+                })
+        
+        # Resumen
+        self.print_summary(stats)
+        
+        return stats
+    
+    def process_single_pdf(self, pdf_path: str, message_id: str,
+                          db_storage: PostgreSQLTicketStorage = None,
+                          processing_id: int = None) -> dict:
+        """
+        Procesa un único PDF con manejo robusto de errores
+        
+        Returns:
+            dict con status: 'success', 'error', 'duplicate', 'invalid'
+        """
+        result = {'status': 'error', 'error': None, 'ticket_id': None}
+        
+        try:
+            # Actualizar estado: extrayendo
+            if db_storage and processing_id:
+                db_storage.update_processing_status(
+                    processing_id, ProcessingStatus.EXTRACTING
+                )
+            
+            # Extraer texto del PDF
+            text = self.extract_text_from_pdf(pdf_path)
+            
+            if not text or len(text.strip()) < 100:
+                error_msg = "Texto extraído insuficiente o vacío"
+                logger.error(error_msg)
+                
+                if db_storage and processing_id:
+                    db_storage.update_processing_status(
+                        processing_id, ProcessingStatus.FAILED,
+                        error_stage='extraction',
+                        error_message=error_msg
+                    )
+                
+                result['status'] = 'error'
+                result['error'] = error_msg
+                return result
+            
+            # Guardar backup del texto
+            if db_storage and processing_id:
+                self.save_text_backup(text, processing_id, db_storage)
+            
+            # Actualizar estado: parseando
+            if db_storage and processing_id:
+                db_storage.update_processing_status(
+                    processing_id, ProcessingStatus.PARSING
+                )
+            
+            # Parsear ticket
+            parser = MercadonaTicketParser(text)
+            ticket = parser.parse()
+            
+            # Actualizar estado: validando
+            if db_storage and processing_id:
+                db_storage.update_processing_status(
+                    processing_id, ProcessingStatus.VALIDATING
+                )
+            
+            # Validar ticket
+            if db_storage:
+                is_valid, errors = db_storage.validate_ticket(ticket)
+                
+                if not is_valid:
+                    error_msg = f"Ticket inválido: {'; '.join(errors)}"
+                    logger.warning(error_msg)
+                    
+                    db_storage.update_processing_status(
+                        processing_id, ProcessingStatus.FAILED,
+                        error_stage='validation',
+                        error_message=error_msg
+                    )
+                    
+                    # Copiar a carpeta de fallidos
+                    failed_path = self.backup_dir / 'failed' / os.path.basename(pdf_path)
+                    shutil.copy2(pdf_path, failed_path)
+                    
+                    result['status'] = 'invalid'
+                    result['error'] = error_msg
+                    return result
+            
+            # Actualizar estado: guardando
+            if db_storage and processing_id:
+                db_storage.update_processing_status(
+                    processing_id, ProcessingStatus.SAVING
+                )
+            
+            # Guardar en base de datos
+            if db_storage:
+                try:
+                    ticket_id = db_storage.save_ticket(ticket)
+                    
+                    # Actualizar estado: completado
+                    db_storage.update_processing_status(
+                        processing_id, ProcessingStatus.COMPLETED,
+                        ticket_id=ticket_id
+                    )
+                    
+                    logger.info(f"✓ Ticket procesado exitosamente - ID: {ticket_id}")
+                    print(f"  ✓ Ticket guardado en BD (ID: {ticket_id})")
+                    
+                    result['status'] = 'success'
+                    result['ticket_id'] = ticket_id
+                    return result
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    
+                    # Verificar si es un duplicado
+                    if 'duplicate' in error_str.lower() or 'already exists' in error_str.lower():
+                        logger.info(f"Ticket duplicado detectado: {ticket.invoice_number}")
+                        print(f"  ⚠ Ticket duplicado (factura ya existe)")
+                        
+                        db_storage.update_processing_status(
+                            processing_id, ProcessingStatus.COMPLETED,
+                            error_message="Duplicado"
+                        )
+                        
+                        result['status'] = 'duplicate'
+                        return result
+                    else:
+                        raise
+            
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            
+            logger.error(f"Error procesando PDF: {error_msg}")
+            logger.error(error_trace)
+            print(f"  ✗ Error: {error_msg}")
+            
+            if db_storage and processing_id:
+                db_storage.update_processing_status(
+                    processing_id, ProcessingStatus.RETRY,
+                    error_stage='processing',
+                    error_message=error_msg,
+                    error_traceback=error_trace
+                )
+            
+            # Copiar a carpeta de fallidos
+            try:
+                failed_path = self.backup_dir / 'failed' / os.path.basename(pdf_path)
+                shutil.copy2(pdf_path, failed_path)
+                logger.info(f"PDF copiado a carpeta de fallidos: {failed_path}")
+            except Exception as copy_error:
+                logger.error(f"Error copiando a carpeta de fallidos: {copy_error}")
+            
+            result['status'] = 'error'
+            result['error'] = error_msg
+            return result
+    
+    def print_summary(self, stats: dict):
+        """Imprime resumen de estadísticas"""
+        print("\n" + "="*60)
+        print("📊 RESUMEN DEL PROCESAMIENTO")
+        print("="*60)
+        print(f"✉️  Correos encontrados: {stats['correos_encontrados']}")
+        print(f"📎 PDFs descargados: {stats['pdfs_descargados']}")
+        print(f"🎫 Tickets procesados: {stats['tickets_procesados']}")
+        print(f"💾 Tickets guardados en BD: {stats['tickets_guardados']}")
+        print(f"🔄 Reintentos exitosos: {stats['reintentos_exitosos']}")
+        print(f"⚠️  Tickets duplicados: {stats['tickets_duplicados']}")
+        print(f"⚠️  Tickets inválidos: {stats['tickets_invalidos']}")
+        print(f"❌ Errores: {stats['errores']}")
+        
+        if stats['errores_detalle']:
+            print("\n📋 Detalle de errores:")
+            for i, err in enumerate(stats['errores_detalle'][:5], 1):
+                print(f"  {i}. {err}")
+            
+            if len(stats['errores_detalle']) > 5:
+                print(f"  ... y {len(stats['errores_detalle']) - 5} errores más")
+        
+        print("="*60)
+        
+        logger.info(f"Resumen: {json.dumps(stats)}")
+
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    # Configurar logging primero
+    setup_logging(log_dir='logs', log_level=logging.INFO)
+    
+    # Texto de ejemplo del ticket
+    ticket_text = """
+    MERCADONA, S.A. A-46103834
+    C/ HUMANES DE MADRID, 4
+    28914 Leganés
+    TELÉFONO: 916486550
+    06/12/2025 10:54 OP: 4188075
+    FACTURA SIMPLIFICADA: 3274-010-538273
+    
+    Descripción                      P. Unit    Importe
+    1 CHULETA PAVO                              4,20
+    1 ARÁNDANOS                                 2,20
+    1 ENTRECOT                                  5,15
+    1 AGUADOY P-6X500ML                         1,44
+    2 YOGUR GRIEGO LIGERO           1,55        3,10
+    2 CUAJADA                        1,25        2,50
+    2 COLA                           0,92        1,84
+    1 LECHE FRESCA ENT                          1,15
+    2 12 HUEVOS CAMPEROS            3,70        7,40
+    1 PAN MOÑO                                  1,45
+    
+    TOTAL (€)    60.19
+    TARJETA BANCARIA
+    
+    IVA    BASE IMPONIBLE (€)    CUOTA
+    4%          26,79              1,07
+    10%         23,58              2,36
+    21%          5,28              1,11
+    """
+    
+    parser = MercadonaTicketParser(ticket_text)
+    ticket = parser.parse()
+    
+    print(format_ticket(ticket))
+    
+    # También puedes acceder a los datos directamente
+    print("\n\nAcceso directo a datos:")
+    print(f"Total de productos: {len(ticket.products)}")
+    print(f"Importe total: {ticket.total}€")
+    
+    print("\nProductos más caros:")
+    sorted_products = sorted(ticket.products, key=lambda x: x.total_price, reverse=True)
+    for p in sorted_products[:3]:
+        print(f"  - {p.description}: {p.total_price}€")
+    
+    # =================================================================
+    # EJEMPLO DE USO CON POSTGRESQL Y CONTROL DE ERRORES
+    # =================================================================
+    print("\n" + "="*60)
+    print("GUARDANDO EN POSTGRESQL CON CONTROL DE ERRORES")
+    print("="*60)
+    
+    # Configurar conexión a PostgreSQL
+    db = PostgreSQLTicketStorage(
+        host='localhost',
+        port=5432,
+        database='mercadona',
+        user='postgres',
+        password='tu_password'
+    )
+    
+    # Crear tablas (solo necesario la primera vez)
+    try:
+        db.create_tables()
+        
+        # Validar ticket antes de guardar
+        is_valid, errors = db.validate_ticket(ticket)
+        if is_valid:
+            # Guardar el ticket
+            ticket_id = db.save_ticket(ticket)
+            print(f"\n✓ Ticket validado y guardado con ID: {ticket_id}")
+        else:
+            print(f"\n⚠ Ticket no válido:")
+            for error in errors:
+                print(f"  - {error}")
+        
+        # Recuperar el ticket
+        ticket_recuperado = db.get_ticket(ticket_id)
+        print(f"\nTicket recuperado: {ticket_recuperado['numero_factura']}")
+        
+        # Estadísticas
+        total_gastado = db.get_total_gastado()
+        print(f"\nTotal gastado (todos los tickets): {total_gastado}€")
+        
+        # Productos más comprados
+        productos_top = db.get_productos_mas_comprados(5)
+        print("\nTop 5 productos más comprados:")
+        for i, p in enumerate(productos_top, 1):
+            print(f"{i}. {p['producto']}: {p['veces_comprado']} veces, {p['gasto_total']}€ total")
+    
+    except Exception as e:
+        logger.error(f"Error de PostgreSQL: {e}")
+        logger.error(traceback.format_exc())
+        print(f"\n⚠ Error de PostgreSQL: {e}")
+        print("Asegúrate de tener PostgreSQL instalado y configurado correctamente")
+    
+    # =================================================================
+    # EJEMPLO: PROCESAR TICKETS DESDE GMAIL CON CONTROL DE ERRORES
+    # =================================================================
+    print("\n" + "="*60)
+    print("PROCESAMIENTO AUTOMÁTICO DESDE GMAIL")
+    print("="*60)
+    
+    """
+    # 1. Configurar Gmail API (solo primera vez):
+    # - Ve a https://console.cloud.google.com/
+    # - Crea un proyecto nuevo
+    # - Habilita Gmail API
+    # - Crea credenciales OAuth 2.0
+    # - Descarga credentials.json y ponlo en la misma carpeta
+    
+    # 2. Instalar dependencias:
+    # pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client pdfplumber
+    
+    # 3. Procesar tickets automáticamente con control de errores:
+    
+    # Configurar logging
+    setup_logging(log_dir='logs', log_level=logging.INFO)
+    
+    gmail_processor = GmailTicketProcessor(
+        backup_dir='ticket_backups',  # Todos los archivos se guardan aquí
+        max_retries=3                  # Máximo 3 intentos por ticket
+    )
+    
+    # Conectar a base de datos
+    db = PostgreSQLTicketStorage(
+        host='localhost',
+        database='mercadona',
+        user='postgres',
+        password='tu_password'
+    )
+    
+    # Crear tablas
+    db.create_tables()
+    
+    # Procesar todos los tickets nuevos con reintentos automáticos
+    stats = gmail_processor.process_all_tickets(
+        db_storage=db,
+        mark_as_read=True,      # Marcar como leído
+        add_label=True,          # Añadir etiqueta "Mercadona/Procesado"
+        delete_pdf=False,        # NO eliminar PDFs (mantener backups)
+        retry_failed=True        # Reintentar tickets que fallaron antes
+    )
+    
+    print(f"\n✓ Procesamiento completado:")
+    print(f"  - Tickets guardados: {stats['tickets_guardados']}")
+    print(f"  - Reintentos exitosos: {stats['reintentos_exitosos']}")
+    print(f"  - Errores: {stats['errores']}")
+    
+    # Ver logs en: logs/tickets_YYYYMMDD.log y logs/errors_YYYYMMDD.log
+    # Ver backups en: ticket_backups/pdfs/, ticket_backups/text/, ticket_backups/failed/
+    """
+    
+    print("\n💡 Características de control de errores:")
+    print("  ✓ Logging completo en archivos")
+    print("  ✓ Backup automático de PDFs y texto extraído")
+    print("  ✓ Tracking de cada ticket en la base de datos")
+    print("  ✓ Reintentos automáticos para tickets fallidos")
+    print("  ✓ Validación de datos antes de guardar")
+    print("  ✓ Detección de duplicados")
+    print("  ✓ Archivos problemáticos se copian a carpeta 'failed'")
+    print("  ✓ No se pierden tickets: todo queda respaldado")

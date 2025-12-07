@@ -1,0 +1,4 @@
+# Configuración de uv para el proyecto mercagasto-batch
+# Para más opciones ver: https://docs.astral.sh/uv/configuration/
+
+# Configuración mínima - uv usará valores por defecto
