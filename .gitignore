@@ -64,3 +64,5 @@ Thumbs.db
 # Archivos de configuración específicos
 config.ini
 config.json
+coverage.xml
+.coverage

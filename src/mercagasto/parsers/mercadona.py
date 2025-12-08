@@ -53,11 +53,37 @@ class MercadonaTicketParser(TicketParserBase):
             
             logger.info(f"Ticket parseado: {ticket.invoice_number}, {len(ticket.products)} productos, {ticket.total}€")
             
+            # Debug logging si no hay número de factura
+            if not ticket.invoice_number:
+                logger.warning("No se encontró número de factura. Buscando en todo el texto...")
+                self._debug_invoice_number_search()
+            
         except Exception as e:
             logger.error(f"Error parseando ticket de Mercadona: {e}")
             raise
         
         return ticket
+    
+    def _debug_invoice_number_search(self) -> None:
+        """Debug para buscar posibles números de factura en el texto."""
+        logger.debug("=== DEBUG: Búsqueda de número de factura ===")
+        
+        for i, line in enumerate(self.lines, 1):
+            line_clean = self._clean_text(line)
+            
+            # Buscar líneas que contengan palabras relacionadas con factura
+            if any(keyword in line_clean.upper() for keyword in ['FACTURA', 'FAC', 'INVOICE']):
+                logger.debug(f"Línea {i}: {line_clean}")
+            
+            # Buscar patrones de números que podrían ser facturas
+            if re.search(r'\d{3,}-\d+-\d+', line_clean):
+                logger.debug(f"Patrón XXX-X-X en línea {i}: {line_clean}")
+            
+            if re.search(r'\d{8,}', line_clean):
+                logger.debug(f"Número largo en línea {i}: {line_clean}")
+        
+        logger.debug("=== FIN DEBUG ===")
+    
     
     def _parse_store_info(self, ticket: TicketData) -> None:
         """Extrae información de la tienda Mercadona."""
@@ -100,11 +126,29 @@ class MercadonaTicketParser(TicketParserBase):
                 if match:
                     ticket.order_number = match.group(1)
             
-            # Número de factura
+            # Número de factura - Múltiples patrones
             elif "FACTURA SIMPLIFICADA:" in line:
+                # Patrón: FACTURA SIMPLIFICADA: 123-456-789
                 match = re.search(r'(\d+-\d+-\d+)', line)
                 if match:
                     ticket.invoice_number = match.group(1)
+            elif "FACTURA:" in line:
+                # Patrón: FACTURA: 123456789
+                match = re.search(r'FACTURA:\s*(\d+)', line)
+                if match:
+                    ticket.invoice_number = match.group(1)
+            elif re.search(r'Nº\s*(?:FACTURA|FAC):', line, re.IGNORECASE):
+                # Patrón: Nº FACTURA: 123-456-789
+                match = re.search(r'(\d+-\d+-\d+|\d+)', line)
+                if match:
+                    ticket.invoice_number = match.group(1)
+            elif re.search(r'(\d+-\d+-\d+)', line) and not ticket.invoice_number:
+                # Patrón genérico de números con guiones (como último recurso)
+                # Solo si no hay productos parseados aún para evitar falsos positivos
+                if not ticket.products:
+                    match = re.search(r'(\d+-\d+-\d+)', line)
+                    if match:
+                        ticket.invoice_number = match.group(1)
     
     def _parse_products(self, ticket: TicketData) -> None:
         """Extrae los productos del ticket de Mercadona."""
@@ -150,10 +194,11 @@ class MercadonaTicketParser(TicketParserBase):
             return None
         
         # Buscar precios (números con coma)
-        prices = []
+        prices ]
         price_indices = []
         for i, part in enumerate(parts):
-            if re.match(r'\d+,\d+', part):
+            # Verificar que sea un número con coma y no contenga letras
+            if re.match(r'^\d+,\d+$', part):
                 prices.append(float(part.replace(',', '.')))
                 price_indices.append(i)
         

@@ -1,0 +1,261 @@
+{
+  "store_name": "MERCADONA, S.A.",
+  "cif": "A-46103834",
+  "address": "C/ HUMANES DE MADRID 4",
+  "postal_code": "28914",
+  "city": "LEGANES",
+  "phone": "916486550",
+  "date": "2023-09-25",
+  "time": "10:38",
+  "order_number": "",
+  "invoice_number": "3274-010-265960",
+  "total": 104.58,
+  "payment_method": "TARJETA BANCARIA",
+  "products": [
+    {
+      "quantity": 1,
+      "description": "AGUA FUENTE LIVIANA",
+      "unit_price": null,
+      "total_price": 4.74,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "DET LI FRESCURA AZUL",
+      "unit_price": null,
+      "total_price": 3.5,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "ATUN CLARO NATURAL",
+      "unit_price": null,
+      "total_price": 4.4,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "TOMATE DATTERINO",
+      "unit_price": null,
+      "total_price": 1.5,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CONTRA DES CERTIFICA",
+      "unit_price": null,
+      "total_price": 3.87,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "SOLOMILLO PAVO",
+      "unit_price": null,
+      "total_price": 6.78,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CONTRA DES CERTIFICA",
+      "unit_price": null,
+      "total_price": 3.83,
+      "weight": null
+    },
+    {
+      "quantity": 3,
+      "description": "+ PROTEÍNAS FRESA",
+      "unit_price": 1.6,
+      "total_price": 4.8,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "YOGUR NATURAL X6",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "LECHE ENTERA P6",
+      "unit_price": null,
+      "total_price": 1.53,
+      "weight": null
+    },
+    {
+      "quantity": 4,
+      "description": "QUESO COTTAGE",
+      "unit_price": 1.2,
+      "total_price": 4.8,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "C. POLLO 100% NAT",
+      "unit_price": null,
+      "total_price": 2.2,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CUAJADA",
+      "unit_price": null,
+      "total_price": 1.25,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "LECHE FRESCA ENT",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "KÉFIR",
+      "unit_price": null,
+      "total_price": 1.4,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO HAVARTI LIGHT",
+      "unit_price": null,
+      "total_price": 2.8,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "JAMÓN S. S/ADITIVOS",
+      "unit_price": 2.1,
+      "total_price": 4.2,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO RALLADO PIZZA",
+      "unit_price": null,
+      "total_price": 1.54,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "SUAVI HIPOALERGENICO",
+      "unit_price": null,
+      "total_price": 1.65,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "TORTILLA AVENA 6 UN",
+      "unit_price": null,
+      "total_price": 2.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "Q CURADO CORTADO",
+      "unit_price": null,
+      "total_price": 4.93,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "P INTEGRAL TRIGO100%",
+      "unit_price": null,
+      "total_price": 1.63,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AGUACATE BANDEJA",
+      "unit_price": null,
+      "total_price": 3.18,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "CHOC 85% CACAO",
+      "unit_price": 1.05,
+      "total_price": 2.1,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "NEGRO 72% ALMENDRAS",
+      "unit_price": null,
+      "total_price": 1.9,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "DISCOS DESMA OVAL",
+      "unit_price": null,
+      "total_price": 1.65,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "NUEZ NATURAL",
+      "unit_price": null,
+      "total_price": 2.15,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "ALMENDRA SIN PIEL",
+      "unit_price": null,
+      "total_price": 2.5,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "PERLAS FACIAL Q10",
+      "unit_price": null,
+      "total_price": 1.5,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "H.ESPELTA INTEGRAL",
+      "unit_price": null,
+      "total_price": 1.39,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "REFILL C. RICA DÍA",
+      "unit_price": null,
+      "total_price": 4.0,
+      "weight": null
+    },
+    {
+      "quantity": 3,
+      "description": "QUESO FRESCO CABRA",
+      "unit_price": 2.77,
+      "total_price": 8.31,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "12 HUEVOS CAMPEROS",
+      "unit_price": 2.69,
+      "total_price": 5.38,
+      "weight": null
+    }
+  ],
+  "iva_breakdown": {
+    "10%": {
+      "base": 41.84,
+      "cuota": 4.18
+    },
+    "21%": {
+      "base": 10.17,
+      "cuota": 2.13
+    },
+    "0%": {
+      "base": 46.26,
+      "cuota": 0.0
+    }
+  }
+}

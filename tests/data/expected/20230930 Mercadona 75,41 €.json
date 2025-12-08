@@ -1,0 +1,233 @@
+{
+  "store_name": "MERCADONA, S.A.",
+  "cif": "A-46103834",
+  "address": "C/ HUMANES DE MADRID 4",
+  "postal_code": "28914",
+  "city": "LEGANES",
+  "phone": "916486550",
+  "date": "2023-09-30",
+  "time": "09:58",
+  "order_number": "",
+  "invoice_number": "3274-016-096215",
+  "total": 75.41,
+  "payment_method": "TARJETA BANCARIA",
+  "products": [
+    {
+      "quantity": 1,
+      "description": "LECHE FRESCA ENT",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AVENA CRUNCHY",
+      "unit_price": null,
+      "total_price": 2.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "YOGUR NATURAL X6",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "FUENTE DEHESA 6X0,5L",
+      "unit_price": null,
+      "total_price": 1.5,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AGUA FUENTE LIVIANA",
+      "unit_price": null,
+      "total_price": 4.74,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "KÉFIR",
+      "unit_price": 1.4,
+      "total_price": 2.8,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "HARINA DE PIZZA",
+      "unit_price": null,
+      "total_price": 1.45,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AZUCAR MORENO PANELA",
+      "unit_price": null,
+      "total_price": 1.95,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "C. COLOMBIA ALU",
+      "unit_price": null,
+      "total_price": 3.65,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CHICLE HIERBABUENA",
+      "unit_price": null,
+      "total_price": 0.95,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "+ PROTEÍNAS FRESA",
+      "unit_price": null,
+      "total_price": 1.6,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AGUACATE BANDEJA",
+      "unit_price": null,
+      "total_price": 2.84,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CHULETA PAVO",
+      "unit_price": null,
+      "total_price": 5.99,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "NEGRO 72% ALMENDRAS",
+      "unit_price": null,
+      "total_price": 1.9,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "12 HUEVOS CAMPEROS",
+      "unit_price": 2.69,
+      "total_price": 5.38,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "MAYONESA LIGHT.460",
+      "unit_price": null,
+      "total_price": 1.35,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CUAJADA",
+      "unit_price": null,
+      "total_price": 1.25,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "MANDARINA 1 KG",
+      "unit_price": null,
+      "total_price": 2.29,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "QUESO FRESCO CABRA",
+      "unit_price": 2.77,
+      "total_price": 5.54,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "JAMON COCIDO SANDWIC",
+      "unit_price": null,
+      "total_price": 2.11,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO RALLADO PIZZA",
+      "unit_price": null,
+      "total_price": 1.54,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "VACA CORTADO",
+      "unit_price": null,
+      "total_price": 2.31,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO LONCHAS MOZZAR",
+      "unit_price": null,
+      "total_price": 1.78,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "40 B.CIERRA FÁCIL",
+      "unit_price": null,
+      "total_price": 1.7,
+      "weight": null
+    },
+    {
+      "quantity": 3,
+      "description": "QUESO COTTAGE",
+      "unit_price": 1.2,
+      "total_price": 3.6,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "LASAÑA BOLOÑESA",
+      "unit_price": null,
+      "total_price": 2.65,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "ALLIOLI TARRINA",
+      "unit_price": null,
+      "total_price": 1.1,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CHOC 85% CACAO",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "JAMÓN S. S/ADITIVOS",
+      "unit_price": null,
+      "total_price": 2.1,
+      "weight": null
+    }
+  ],
+  "iva_breakdown": {
+    "10%": {
+      "base": 37.45,
+      "cuota": 3.74
+    },
+    "21%": {
+      "base": 1.4,
+      "cuota": 0.3
+    },
+    "0%": {
+      "base": 32.52,
+      "cuota": 0.0
+    }
+  }
+}

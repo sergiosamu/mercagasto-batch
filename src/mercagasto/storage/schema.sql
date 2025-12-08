@@ -669,25 +669,7 @@ $$ LANGUAGE plpgsql;
 
 -- Función: confirmar_opt_in_usuario
 -- Descripción: Confirma el opt-in de un usuario usando su token
-CREATE OR REPLACE FUNCTION confirmar_opt_in_usuario(
-    token_confirmacion VARCHAR(64)
-) RETURNS BOOLEAN AS $$
-DECLARE
-    usuario_encontrado BOOLEAN := FALSE;
-BEGIN
-    UPDATE usuarios 
-    SET opt_in_confirmado = true,
-        fecha_opt_in = CURRENT_TIMESTAMP,
-        token_confirmacion = NULL,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE usuarios.token_confirmacion = confirmar_opt_in_usuario.token_confirmacion
-    AND opt_in_confirmado = false;
-    
-    GET DIAGNOSTICS usuario_encontrado = FOUND;
-    RETURN usuario_encontrado;
-END;
-$$ LANGUAGE plpgsql;
-
+c
 -- Función: obtener_usuarios_para_reporte
 -- Descripción: Obtiene usuarios activos que deben recibir un tipo de reporte
 CREATE OR REPLACE FUNCTION obtener_usuarios_para_reporte(

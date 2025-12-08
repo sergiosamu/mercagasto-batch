@@ -11,8 +11,8 @@ import pytest
 from pathlib import Path
 from datetime import datetime
 
-from src.mercagasto.parsers import MercadonaTicketParser
-from src.mercagasto.processors import PDFTextExtractor
+from src.mercagasto.parsers.mercadona import MercadonaTicketParser
+from src.mercagasto.processors.pdf_extractor import PDFTextExtractor
 
 
 class TestTicketParsing:
@@ -24,7 +24,6 @@ class TestTicketParsing:
         cls.test_data_dir = Path(__file__).parent / 'data'
         cls.pdfs_dir = cls.test_data_dir / 'pdfs'
         cls.expected_dir = cls.test_data_dir / 'expected'
-        cls.pdf_extractor = PDFTextExtractor()
     
     def get_pdf_files(self):
         """Obtiene lista de archivos PDF para testing."""
@@ -53,12 +52,16 @@ class TestTicketParsing:
         if hasattr(ticket_data, '__dict__'):
             result = {}
             for key, value in ticket_data.__dict__.items():
-                if hasattr(value, '__dict__'):
-                    # Productos
-                    if key == 'products':
-                        result[key] = [prod.__dict__ for prod in value]
-                    else:
-                        result[key] = value.__dict__
+                if key == 'products' and hasattr(value, '__iter__'):
+                    # Normalizar productos individualmente
+                    result[key] = []
+                    for prod in value:
+                        if hasattr(prod, '__dict__'):
+                            result[key].append(prod.__dict__)
+                        else:
+                            result[key].append(prod)
+                elif hasattr(value, '__dict__'):
+                    result[key] = value.__dict__
                 else:
                     result[key] = value
             return result
@@ -82,7 +85,7 @@ class TestTicketParsing:
             pytest.skip("No hay archivos PDF para testear")
         
         # Extraer texto del PDF
-        text = self.pdf_extractor.extract_text_from_pdf(str(pdf_file))
+        text = PDFTextExtractor.extract_text_from_pdf(str(pdf_file))
         assert text is not None, f"No se pudo extraer texto de {pdf_file.name}"
         assert len(text.strip()) > 50, f"Texto extraído muy corto en {pdf_file.name}"
         
@@ -156,8 +159,8 @@ class TestPDFExtraction:
     
     def test_pdf_extractor_exists(self):
         """Verifica que el extractor funcione."""
-        extractor = PDFTextExtractor()
-        assert extractor is not None
+        # PDFTextExtractor es una clase con métodos estáticos
+        assert PDFTextExtractor.extract_text_from_pdf is not None
     
     @pytest.mark.parametrize("pdf_file", [
         pytest.param(pdf, id=pdf.name) 
@@ -169,8 +172,7 @@ class TestPDFExtraction:
         if not pdf_file.exists():
             pytest.skip("No hay archivos PDF para testear")
         
-        extractor = PDFTextExtractor()
-        text = extractor.extract_text_from_pdf(str(pdf_file))
+        text = PDFTextExtractor.extract_text_from_pdf(str(pdf_file))
         
         assert text is not None, f"No se pudo extraer texto de {pdf_file.name}"
         assert len(text.strip()) > 0, f"Texto extraído vacío en {pdf_file.name}"

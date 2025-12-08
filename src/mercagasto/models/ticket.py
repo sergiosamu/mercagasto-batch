@@ -57,12 +57,31 @@ class TicketData:
 
     def __post_init__(self):
         """Validaciones post-inicialización."""
-        if not self.invoice_number:
-            raise ValueError("El número de factura es obligatorio")
+        # Permitir crear tickets sin productos para debugging
+        # Solo validar si hay al menos algunos datos críticos
+        if self.total <= 0 and self.products:
+            raise ValueError("El total debe ser positivo cuando hay productos")
+        
+        # Validaciones solo para datos que realmente están presentes
+        if self.store_name and not self.store_name.strip():
+            raise ValueError("El nombre de la tienda no puede estar vacío")
+        if self.cif and not self.cif.strip():
+            raise ValueError("El CIF no puede estar vacío")
+    
+    def validate_for_storage(self):
+        """Validación estricta antes de guardar en base de datos."""
         if not self.products:
-            raise ValueError("El ticket debe tener al menos un producto")
+            raise ValueError("El ticket debe tener al menos un producto para almacenar")
         if self.total <= 0:
-            raise ValueError("El total debe ser positivo")
+            raise ValueError("El total debe ser positivo para almacenar")
+        if not self.store_name or not self.store_name.strip():
+            raise ValueError("El nombre de la tienda es obligatorio para almacenar")
+        if not self.cif or not self.cif.strip():
+            raise ValueError("El CIF es obligatorio para almacenar")
+        if not self.date:
+            raise ValueError("La fecha es obligatoria para almacenar")
+        if not self.invoice_number or not self.invoice_number.strip():
+            raise ValueError("El número de factura es obligatorio para almacenar")
 
     @property
     def products_total(self) -> float:

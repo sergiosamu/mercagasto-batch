@@ -1,0 +1,356 @@
+{
+  "store_name": "MERCADONA, S.A.",
+  "cif": "A-46103834",
+  "address": "C/ HUMANES DE MADRID 4",
+  "postal_code": "28914",
+  "city": "LEGANES",
+  "phone": "916486550",
+  "date": "2023-09-07",
+  "time": "10:23",
+  "order_number": "",
+  "invoice_number": "3274-010-259038",
+  "total": 143.27,
+  "payment_method": "TARJETA BANCARIA",
+  "products": [
+    {
+      "quantity": 1,
+      "description": "AGUA FUENTE LIVIANA",
+      "unit_price": null,
+      "total_price": 4.74,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "SANDÍA PARTIDA B/S",
+      "unit_price": null,
+      "total_price": 3.23,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "SUAVI HIPOALERGENICO",
+      "unit_price": null,
+      "total_price": 1.65,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "LECHE ENTERA P6",
+      "unit_price": null,
+      "total_price": 5.46,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "YOGUR NATURAL X6",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 4,
+      "description": "QUESO COTTAGE",
+      "unit_price": 1.2,
+      "total_price": 4.8,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "JAMÓN S. S/ADITIVOS",
+      "unit_price": 2.1,
+      "total_price": 4.2,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "BASE PIZZA CEREALES",
+      "unit_price": null,
+      "total_price": 2.6,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "C. POLLO 100% NAT",
+      "unit_price": null,
+      "total_price": 2.2,
+      "weight": null
+    },
+    {
+      "quantity": 3,
+      "description": "+ PROTEÍNAS FRESA",
+      "unit_price": 1.6,
+      "total_price": 4.8,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "Q CURADO CORTADO",
+      "unit_price": null,
+      "total_price": 4.68,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO FRESCO VACA",
+      "unit_price": null,
+      "total_price": 1.65,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "QUESO FRESCO CABRA",
+      "unit_price": 2.77,
+      "total_price": 5.54,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "FUENTE DEHESA 6X0,5L",
+      "unit_price": null,
+      "total_price": 1.5,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "TOMATE UNTAR TARRO",
+      "unit_price": 1.65,
+      "total_price": 3.3,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "NUEZ NATURAL",
+      "unit_price": null,
+      "total_price": 2.15,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "LECHE ENTERA P6",
+      "unit_price": null,
+      "total_price": 1.53,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "REGAÑA",
+      "unit_price": null,
+      "total_price": 1.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "ATUN CLARO NATURAL",
+      "unit_price": null,
+      "total_price": 4.5,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "SARDINILLA RE. SAL O",
+      "unit_price": 1.85,
+      "total_price": 3.7,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO RALLADO PIZZA",
+      "unit_price": null,
+      "total_price": 1.54,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "QUESO LONCHAS MOZZAR",
+      "unit_price": 1.78,
+      "total_price": 3.56,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CHULETA PAVO",
+      "unit_price": null,
+      "total_price": 4.15,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "FREGONA SUAVE",
+      "unit_price": null,
+      "total_price": 0.8,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "ZANAHORIA 500 G",
+      "unit_price": null,
+      "total_price": 0.85,
+      "weight": null
+    },
+    {
+      "quantity": 3,
+      "description": "KÉFIR",
+      "unit_price": 1.4,
+      "total_price": 4.2,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "GUANTE FLOCADO M",
+      "unit_price": null,
+      "total_price": 0.9,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AGUACATE BANDEJA",
+      "unit_price": null,
+      "total_price": 3.24,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "QUESO BOLA PEQUEÑO",
+      "unit_price": null,
+      "total_price": 3.41,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "PAÑUELOS 4 CAP 10X10",
+      "unit_price": null,
+      "total_price": 1.15,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "TOALL.BEBE ATOPICAS",
+      "unit_price": null,
+      "total_price": 1.7,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "12 HUEVOS CAMPEROS",
+      "unit_price": 2.69,
+      "total_price": 5.38,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AVENA CRUNCHY",
+      "unit_price": null,
+      "total_price": 2.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "KIWI VERDE BANDEJA",
+      "unit_price": null,
+      "total_price": 4.17,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "COMPRESA NORMAL ALAS",
+      "unit_price": null,
+      "total_price": 3.25,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "TORTILLA AVENA 6 UN",
+      "unit_price": null,
+      "total_price": 2.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "MANTEQUILLA PAST.SIN",
+      "unit_price": null,
+      "total_price": 2.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "HIGIENICO DOBLE ROLL",
+      "unit_price": null,
+      "total_price": 2.3,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "PERLAS FACIAL Q10",
+      "unit_price": 1.5,
+      "total_price": 3.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "PERFILADOR OJOS Nº01",
+      "unit_price": null,
+      "total_price": 2.5,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "CHOC 85% CACAO",
+      "unit_price": 1.05,
+      "total_price": 2.1,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AJO SECO 250 G",
+      "unit_price": null,
+      "total_price": 1.39,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "PEPINO MALLA",
+      "unit_price": null,
+      "total_price": 2.2,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "PALILLOS REDONDOS",
+      "unit_price": null,
+      "total_price": 1.25,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "ICEBERG",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CEBOLLA TUBO",
+      "unit_price": null,
+      "total_price": 1.85,
+      "weight": null
+    }
+  ],
+  "iva_breakdown": {
+    "4%": {
+      "base": 3.13,
+      "cuota": 0.12
+    },
+    "10%": {
+      "base": 45.49,
+      "cuota": 4.55
+    },
+    "21%": {
+      "base": 12.6,
+      "cuota": 2.65
+    },
+    "0%": {
+      "base": 74.73,
+      "cuota": 0.0
+    }
+  }
+}

@@ -1,0 +1,163 @@
+{
+  "store_name": "MERCADONA, S.A.",
+  "cif": "A-46103834",
+  "address": "C/ HUMANES DE MADRID 4",
+  "postal_code": "28914",
+  "city": "LEGANES",
+  "phone": "916486550",
+  "date": "2023-09-14",
+  "time": "11:51",
+  "order_number": "",
+  "invoice_number": "3274-010-261864",
+  "total": 67.58,
+  "payment_method": "TARJETA BANCARIA",
+  "products": [
+    {
+      "quantity": 4,
+      "description": "QUESO COTTAGE",
+      "unit_price": 1.2,
+      "total_price": 4.8,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "+ PROTEÍNAS FRESA",
+      "unit_price": 1.6,
+      "total_price": 3.2,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "QUESO LONCHAS MOZZAR",
+      "unit_price": 1.78,
+      "total_price": 3.56,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "JAMÓN S. S/ADITIVOS",
+      "unit_price": null,
+      "total_price": 2.1,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "Q CURADO CORTADO",
+      "unit_price": null,
+      "total_price": 5.23,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "CHULETA PAVO",
+      "unit_price": null,
+      "total_price": 4.53,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "QUESO FRESCO CABRA",
+      "unit_price": 2.77,
+      "total_price": 5.54,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "YOGUR MACEDONIA",
+      "unit_price": null,
+      "total_price": 0.8,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "HIGIENICO DOBLE ROLL",
+      "unit_price": null,
+      "total_price": 2.3,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "KÉFIR",
+      "unit_price": null,
+      "total_price": 1.4,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "12 HUEVOS CAMPEROS",
+      "unit_price": 2.69,
+      "total_price": 5.38,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "MOPA ATRAPA POLVO",
+      "unit_price": null,
+      "total_price": 4.5,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "PANEC. 100% INTEGRAL",
+      "unit_price": null,
+      "total_price": 1.05,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "GUANTE RESIS.LEJÍA M",
+      "unit_price": null,
+      "total_price": 2.0,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "TOMATE DATTERINO",
+      "unit_price": 1.5,
+      "total_price": 3.0,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "BICARBONATO",
+      "unit_price": null,
+      "total_price": 1.1,
+      "weight": null
+    },
+    {
+      "quantity": 2,
+      "description": "QUESO RALLADO PIZZA",
+      "unit_price": 1.54,
+      "total_price": 3.08,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AGUACATE BANDEJA",
+      "unit_price": null,
+      "total_price": 3.02,
+      "weight": null
+    },
+    {
+      "quantity": 1,
+      "description": "AGUA FUENTE LIVIANA",
+      "unit_price": null,
+      "total_price": 4.74,
+      "weight": null
+    }
+  ],
+  "iva_breakdown": {
+    "10%": {
+      "base": 19.93,
+      "cuota": 1.99
+    },
+    "21%": {
+      "base": 7.27,
+      "cuota": 1.53
+    },
+    "0%": {
+      "base": 36.86,
+      "cuota": 0.0
+    }
+  }
+}
