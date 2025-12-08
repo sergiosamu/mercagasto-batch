@@ -1,0 +1,24 @@
+MERCADONA S.A. A-46103834
+Avda. de Francia, 11
+46023 VALENCIA
+Tel: 963 123 456
+
+15/12/2024 16:30
+OP: 56789
+
+FACTURA SIMPLIFICADA: 123-456-789
+
+Descripción                           Importe
+====================================================
+LECHE ENTERA 1L                       1.25
+PAN DE MOLDE INTEGRAL                 2.10
+TOMATES RAMA 500G                     1.85
+ACEITE OLIVA VIRGEN 1L                4.50
+====================================================
+
+TOTAL                                 9.70€
+
+EFECTIVO                              10.00€
+CAMBIO                                0.30€
+
+Gracias por su compra

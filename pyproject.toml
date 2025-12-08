@@ -29,6 +29,9 @@ dependencies = [
     "pathlib2>=2.3.0",
     "requests>=2.25.0",
     "urllib3>=1.26.0",
+    "python-dotenv>=1.0.0",
+    "google-auth>=2.41.1",
+    "pytest>=8.4.2",
 ]
 
 [project.optional-dependencies]
@@ -220,3 +223,8 @@ known-first-party = ["mercagasto"]
 [tool.bandit]
 exclude_dirs = ["tests", "venv", ".venv"]
 skips = ["B101", "B601"]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+]

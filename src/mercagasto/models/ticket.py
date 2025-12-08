@@ -91,7 +91,7 @@ class TicketData:
     @property
     def is_total_consistent(self) -> bool:
         """Verifica si el total coincide con la suma de productos."""
-        return abs(self.products_total - self.total) <= 0.5  # Tolerancia de 0.5€
+        return abs(self.products_total - self.total) <= 0.01  # Tolerancia mínima de 1 céntimo
 
     def get_product_count(self) -> int:
         """Obtiene el número total de productos."""

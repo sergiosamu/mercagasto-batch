@@ -6,11 +6,11 @@ import psycopg2
 from psycopg2.extras import execute_values
 from contextlib import contextmanager
 from datetime import datetime
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 import traceback
 
 from .base import TicketStorageBase
-from ..models import TicketData, ProcessingStatus
+from ..models import TicketData, ProcessingStatus, Product
 from ..config import get_logger, DatabaseConfig
 
 logger = get_logger(__name__)
@@ -19,12 +19,13 @@ logger = get_logger(__name__)
 class PostgreSQLTicketStorage(TicketStorageBase):
     """Implementación de almacenamiento en PostgreSQL."""
     
-    def __init__(self, config: DatabaseConfig):
+    def __init__(self, config: DatabaseConfig, debug_queries: bool = False):
         """
         Inicializa el almacenamiento PostgreSQL.
         
         Args:
             config: Configuración de la base de datos
+            debug_queries: Si True, logea todas las consultas SQL
         """
         self.connection_params = {
             'host': config.host,
@@ -36,7 +37,10 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             'connect_timeout': config.connect_timeout,
             'application_name': config.application_name
         }
+        self.debug_queries = debug_queries
         logger.info(f"Configurado almacenamiento PostgreSQL: {config.host}:{config.port}/{config.database} (SSL: {config.sslmode})")
+        if debug_queries:
+            logger.info("🔍 DEBUG de consultas SQL activado")
     
     @contextmanager
     def get_connection(self):
@@ -145,7 +149,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             
             logger.info("✓ Tablas creadas exitosamente")
     
-    def _create_indexes(self, cursor):
+    def _create_indexes(self, cursor) -> None:
         """Crea índices para mejorar el rendimiento."""
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_tickets_fecha ON tickets(fecha_compra)",
@@ -183,14 +187,17 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             """, (message_id, pdf_filename, pdf_hash, 
                   ProcessingStatus.PENDING.value, pdf_path))
             
-            processing_id = cursor.fetchone()[0]
+            result = cursor.fetchone()
+            processing_id = result[0] if result else None
+            if processing_id is None:
+                raise ValueError("No se pudo obtener el ID del procesamiento")
             logger.info(f"Iniciado procesamiento ID: {processing_id} para mensaje {message_id}")
             return processing_id
     
     def update_processing_status(self, processing_id: int, status: ProcessingStatus,
-                                error_stage: str = None, error_message: str = None,
-                                error_traceback: str = None, ticket_id: int = None,
-                                extracted_text_path: str = None):
+                                error_stage: Optional[str] = None, error_message: Optional[str] = None,
+                                error_traceback: Optional[str] = None, ticket_id: Optional[int] = None,
+                                extracted_text_path: Optional[str] = None) -> None:
         """Actualiza el estado de procesamiento."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -226,20 +233,22 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 ORDER BY last_attempt DESC
             """, (ProcessingStatus.FAILED.value, ProcessingStatus.RETRY.value, max_attempts))
             
+            # Convertir a diccionario usando nombres de columna
+            columns = [desc[0] for desc in cursor.description]
             return [
                 {
-                    'id': row[0],
-                    'message_id': row[1],
-                    'pdf_filename': row[2],
-                    'pdf_path': row[3],
-                    'attempts': row[4],
-                    'error_message': row[5]
+                    'id': row[columns.index('id')],
+                    'message_id': row[columns.index('gmail_message_id')],
+                    'pdf_filename': row[columns.index('pdf_filename')],
+                    'pdf_path': row[columns.index('pdf_path')],
+                    'attempts': row[columns.index('attempts')],
+                    'error_message': row[columns.index('error_message')]
                 }
                 for row in cursor.fetchall()
             ]
     
     def register_file_backup(self, processing_id: int, file_type: str,
-                            file_path: str, file_hash: str, file_size: int):
+                            file_path: str, file_hash: str, file_size: int) -> None:
         """Registra un backup de archivo."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -271,7 +280,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
         if not ticket.invoice_number:
             errors.append("Sin número de factura")
         
-        # Validar que la suma de productos coincida con el total
+        # Validar que la suma de productos coincida exactamente con el total
         if not ticket.is_total_consistent:
             suma_productos = ticket.products_total
             errors.append(
@@ -308,13 +317,16 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 # 1. Insertar o obtener tienda
                 tienda_id = self._insert_or_get_store(cursor, ticket)
                 
-                # 2. Insertar ticket
-                ticket_id = self._insert_ticket(cursor, ticket, tienda_id)
+                # 2. Insertar ticket - IMPORTANTE: verificar si ya existe
+                ticket_id, is_duplicate = self._insert_ticket(cursor, ticket, tienda_id)
                 
-                # 3. Insertar productos
-                self._insert_products(cursor, ticket, ticket_id)
+                # 3. Solo insertar productos si NO es duplicado
+                if not is_duplicate:
+                    self._insert_products(cursor, ticket, ticket_id)
+                    logger.info(f"✓ Ticket guardado - ID: {ticket_id}, Factura: {ticket.invoice_number}")
+                else:
+                    logger.warning(f"⚠️ Ticket duplicado detectado - ID: {ticket_id}, Factura: {ticket.invoice_number} - NO se insertaron productos")
                 
-                logger.info(f"✓ Ticket guardado - ID: {ticket_id}, Factura: {ticket.invoice_number}")
                 return ticket_id
                 
             except Exception as e:
@@ -337,17 +349,32 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             ticket.store_name, ticket.cif, ticket.address,
             ticket.postal_code, ticket.city, ticket.phone
         ))
-        return cursor.fetchone()[0]
+        result = cursor.fetchone()
+        if result is None:
+            raise ValueError("No se pudo obtener el ID de la tienda")
+        return result[0]
     
-    def _insert_ticket(self, cursor, ticket: TicketData, tienda_id: int) -> int:
-        """Inserta el ticket principal."""
-        # Preparar datos de IVA
-        iva_data = {
+    def _insert_ticket(self, cursor, ticket: TicketData, tienda_id: int) -> Tuple[int, bool]:
+        """
+        Inserta el ticket principal.
+        
+        Returns:
+            Tuple[int, bool]: (ticket_id, is_duplicate)
+        """
+        # Preparar datos de IVA con conversión de tipos segura
+        iva_data: Dict[str, Dict[str, Optional[float]]] = {
             '4%': {'base': None, 'cuota': None},
             '10%': {'base': None, 'cuota': None},
             '21%': {'base': None, 'cuota': None}
         }
-        iva_data.update(ticket.iva_breakdown)
+        
+        # Actualizar con conversión segura de tipos
+        for percentage, breakdown in ticket.iva_breakdown.items():
+            if percentage in iva_data:
+                iva_data[percentage] = {
+                    'base': breakdown.get('base'),  # float → Optional[float]
+                    'cuota': breakdown.get('cuota') # float → Optional[float]
+                }
         
         cursor.execute("""
             INSERT INTO tickets (
@@ -372,13 +399,16 @@ class PostgreSQLTicketStorage(TicketStorageBase):
         if result is None:
             # El ticket ya existe (conflicto con numero_factura)
             cursor.execute("SELECT id FROM tickets WHERE numero_factura = %s", (ticket.invoice_number,))
-            ticket_id = cursor.fetchone()[0]
+            existing = cursor.fetchone()
+            if existing is None:
+                raise ValueError("No se pudo obtener el ticket duplicado")
+            ticket_id = existing[0]
             logger.warning(f"Ticket duplicado detectado: factura {ticket.invoice_number}, ID {ticket_id}")
-            return ticket_id
+            return ticket_id, True  # ← is_duplicate = True
         
-        return result[0]
+        return result[0], False  # ← is_duplicate = False
     
-    def _insert_products(self, cursor, ticket: TicketData, ticket_id: int):
+    def _insert_products(self, cursor, ticket: TicketData, ticket_id: int) -> None:
         """Inserta los productos del ticket."""
         productos_data = [
             (
@@ -416,6 +446,10 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             row = cursor.fetchone()
             if not row:
                 return None
+                
+            # Convertir usando nombres de columna
+            columns = [desc[0] for desc in cursor.description]
+            ticket_dict = dict(zip(columns, row))
             
             # Obtener productos
             cursor.execute("""
@@ -426,29 +460,24 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             """, (ticket_id,))
             
             productos = cursor.fetchall()
+            prod_columns = [desc[0] for desc in cursor.description]
             
             return {
-                'id': row[0],
-                'numero_pedido': row[1],
-                'numero_factura': row[2],
-                'fecha': row[3],
-                'hora': row[4],
-                'total': float(row[5]),
-                'metodo_pago': row[6],
+                'id': ticket_dict['id'],
+                'numero_pedido': ticket_dict['numero_pedido'],
+                'numero_factura': ticket_dict['numero_factura'],
+                'fecha': ticket_dict['fecha_compra'],
+                'hora': ticket_dict['hora_compra'],
+                'total': float(ticket_dict['total']),
+                'metodo_pago': ticket_dict['metodo_pago'],
                 'tienda': {
-                    'nombre': row[7],
-                    'cif': row[8],
-                    'direccion': row[9],
-                    'ciudad': row[10]
+                    'nombre': ticket_dict['nombre'],
+                    'cif': ticket_dict['cif'],
+                    'direccion': ticket_dict['direccion'],
+                    'ciudad': ticket_dict['ciudad']
                 },
                 'productos': [
-                    {
-                        'cantidad': p[0],
-                        'descripcion': p[1],
-                        'precio_unitario': float(p[2]) if p[2] else None,
-                        'precio_total': float(p[3]),
-                        'peso': p[4]
-                    }
+                    dict(zip(prod_columns, p))
                     for p in productos
                 ]
             }
@@ -465,31 +494,28 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 ORDER BY fecha_compra DESC
             """, (fecha_inicio, fecha_fin))
             
+            columns = [desc[0] for desc in cursor.description]
             return [
-                {
-                    'id': row[0],
-                    'numero_factura': row[1],
-                    'fecha': row[2],
-                    'total': float(row[3])
-                }
+                dict(zip(columns, row))
                 for row in cursor.fetchall()
             ]
     
-    def get_total_gastado(self, fecha_inicio: str = None, fecha_fin: str = None) -> float:
+    def get_total_gastado(self, fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None) -> float:
         """Calcula el total gastado en un periodo."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
             if fecha_inicio and fecha_fin:
                 cursor.execute("""
-                    SELECT COALESCE(SUM(total), 0)
+                    SELECT COALESCE(SUM(total), 0) as total_gastado
                     FROM tickets
                     WHERE fecha_compra BETWEEN %s AND %s
                 """, (fecha_inicio, fecha_fin))
             else:
-                cursor.execute("SELECT COALESCE(SUM(total), 0) FROM tickets")
+                cursor.execute("SELECT COALESCE(SUM(total), 0) as total_gastado FROM tickets")
             
-            return float(cursor.fetchone()[0])
+            result = cursor.fetchone()
+            return float(result[0]) if result else 0.0
     
     def get_productos_mas_comprados(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Obtiene los productos más comprados."""
@@ -498,7 +524,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             
             cursor.execute("""
                 SELECT 
-                    descripcion,
+                    descripcion as producto,
                     COUNT(*) as veces_comprado,
                     SUM(cantidad) as cantidad_total,
                     ROUND(AVG(precio_total), 2) as precio_promedio,
@@ -509,13 +535,214 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 LIMIT %s
             """, (limit,))
             
+            columns = [desc[0] for desc in cursor.description]
             return [
-                {
-                    'producto': row[0],
-                    'veces_comprado': row[1],
-                    'cantidad_total': row[2],
-                    'precio_promedio': float(row[3]),
-                    'gasto_total': float(row[4])
-                }
+                dict(zip(columns, row))
                 for row in cursor.fetchall()
             ]
+
+    def test_connection(self) -> bool:
+        """Test de conexión a la base de datos."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                return True
+        except Exception as e:
+            logger.error(f"Error en test de conexión: {e}")
+            return False
+
+    def get_ticket_by_id(self, ticket_id: int) -> Optional[TicketData]:
+        """Obtiene un ticket por su ID."""
+        if self.debug_queries:
+            logger.info(f"🎯 get_ticket_by_id({ticket_id}) - INICIO")
+            
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Consultar ticket
+            ticket_query = """
+                SELECT 
+                    t.id, t.tienda_id, t.numero_pedido, t.numero_factura,
+                    t.fecha_compra, t.hora_compra, t.total, t.metodo_pago,
+                    t.iva_4_base, t.iva_4_cuota,
+                    t.iva_10_base, t.iva_10_cuota,
+                    t.iva_21_base, t.iva_21_cuota,
+                    ti.nombre as tienda_nombre, ti.cif, ti.direccion,
+                    ti.codigo_postal, ti.ciudad, ti.telefono
+                FROM tickets t
+                LEFT JOIN tiendas ti ON t.tienda_id = ti.id
+                WHERE t.id = %s
+            """
+            
+            if self.debug_queries:
+                logger.info(f"🔍 SQL [GET_TICKET]: {' '.join(ticket_query.split())}")
+                logger.info(f"🔍 PARAMS: ({ticket_id},)")
+            
+            cursor.execute(ticket_query, (ticket_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                if self.debug_queries:
+                    logger.info(f"❌ No se encontró ticket con ID {ticket_id}")
+                return None
+            
+            # Convertir usando nombres de columna
+            columns = [desc[0] for desc in cursor.description]
+            ticket_dict = dict(zip(columns, row))
+            
+            if self.debug_queries:
+                logger.info(f"✅ Ticket encontrado: {ticket_dict['numero_factura']}")
+            
+            # 2. Consultar productos
+            products_query = """
+                SELECT descripcion, cantidad, precio_unitario, precio_total, peso
+                FROM productos
+                WHERE ticket_id = %s
+                ORDER BY id
+            """
+            
+            if self.debug_queries:
+                logger.info(f"🔍 SQL [GET_PRODUCTS]: {' '.join(products_query.split())}")
+                logger.info(f"🔍 PARAMS: ({ticket_id},)")
+            
+            cursor.execute(products_query, (ticket_id,))
+            product_rows = cursor.fetchall()
+            
+            if self.debug_queries:
+                logger.info(f"📦 Productos encontrados: {len(product_rows)} para ticket {ticket_id}")
+            
+            products = []
+            for i, prod_row in enumerate(product_rows):
+                prod_columns = [desc[0] for desc in cursor.description]
+                prod_dict = dict(zip(prod_columns, prod_row))
+                
+                if self.debug_queries and i < 3:  # Solo los primeros 3
+                    logger.info(f"   📦 {i+1}: {prod_dict['descripcion']} - {prod_dict['cantidad']} x {prod_dict['precio_total']}€")
+                
+                product_data = Product(
+                    quantity=prod_dict['cantidad'],
+                    description=prod_dict['descripcion'],
+                    unit_price=float(prod_dict['precio_unitario']) if prod_dict['precio_unitario'] else 0.0,
+                    total_price=float(prod_dict['precio_total']),
+                    weight=prod_dict.get('peso', '')
+                )
+                products.append(product_data)
+            
+            if self.debug_queries and len(product_rows) > 3:
+                logger.info(f"   📦 ... y {len(product_rows) - 3} productos más")
+            
+            # Reconstruir desglose de IVA desde la BD
+            iva_breakdown: Dict[str, Dict[str, float]] = {}
+            
+            # IVA 4%
+            if ticket_dict.get('iva_4_base') or ticket_dict.get('iva_4_cuota'):
+                iva_breakdown['4%'] = {
+                    'base': float(ticket_dict['iva_4_base']) if ticket_dict['iva_4_base'] else 0.0,
+                    'cuota': float(ticket_dict['iva_4_cuota']) if ticket_dict['iva_4_cuota'] else 0.0
+                }
+            
+            # IVA 10%
+            if ticket_dict.get('iva_10_base') or ticket_dict.get('iva_10_cuota'):
+                iva_breakdown['10%'] = {
+                    'base': float(ticket_dict['iva_10_base']) if ticket_dict['iva_10_base'] else 0.0,
+                    'cuota': float(ticket_dict['iva_10_cuota']) if ticket_dict['iva_10_cuota'] else 0.0
+                }
+            
+            # IVA 21%
+            if ticket_dict.get('iva_21_base') or ticket_dict.get('iva_21_cuota'):
+                iva_breakdown['21%'] = {
+                    'base': float(ticket_dict['iva_21_base']) if ticket_dict['iva_21_base'] else 0.0,
+                    'cuota': float(ticket_dict['iva_21_cuota']) if ticket_dict['iva_21_cuota'] else 0.0
+                }
+            
+            # Crear TicketData desde BD con todos los campos requeridos
+            ticket = TicketData(
+                store_name=str(ticket_dict['tienda_nombre']) if ticket_dict['tienda_nombre'] else "Mercadona",
+                cif=str(ticket_dict['cif']) if ticket_dict['cif'] else "A46103834",
+                address=str(ticket_dict['direccion']) if ticket_dict['direccion'] else "",
+                postal_code=str(ticket_dict['codigo_postal']) if ticket_dict['codigo_postal'] else "",
+                city=str(ticket_dict['ciudad']) if ticket_dict['ciudad'] else "",
+                phone=str(ticket_dict['telefono']) if ticket_dict['telefono'] else "",
+                date=ticket_dict['fecha_compra'],
+                time=str(ticket_dict['hora_compra']) if ticket_dict['hora_compra'] else "",
+                order_number=str(ticket_dict['numero_pedido']) if ticket_dict['numero_pedido'] else "",
+                invoice_number=str(ticket_dict['numero_factura']),
+                products=products,
+                total=float(ticket_dict['total']),
+                payment_method=str(ticket_dict['metodo_pago']) if ticket_dict['metodo_pago'] else "",
+                iva_breakdown=iva_breakdown
+            )
+            
+            # Agregar el ID como atributo adicional
+            setattr(ticket, 'id', ticket_dict['id'])
+            
+            if self.debug_queries:
+                logger.info(f"🎯 get_ticket_by_id({ticket_id}) - FIN: {len(products)} productos creados")
+            
+            return ticket
+
+    def get_ticket_by_invoice(self, invoice_number: str) -> Optional[TicketData]:
+        """Obtiene un ticket por número de factura."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM tickets WHERE numero_factura = %s", (invoice_number,))
+            result = cursor.fetchone()
+            
+            if result:
+                return self.get_ticket_by_id(result[0])
+            return None
+
+    def get_products_by_ticket_id(self, ticket_id: int) -> List[Product]:
+        """Obtiene productos de un ticket específico."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT descripcion, cantidad, precio_unitario, precio_total, peso
+                FROM productos
+                WHERE ticket_id = %s
+                ORDER BY id
+            """, (ticket_id,))
+            
+            columns = [desc[0] for desc in cursor.description]
+            products = []
+            for row in cursor.fetchall():
+                product_dict = dict(zip(columns, row))
+                
+                product = Product(
+                    quantity=product_dict['cantidad'],
+                    description=product_dict['descripcion'],
+                    unit_price=float(product_dict['precio_unitario']) if product_dict['precio_unitario'] else 0.0,
+                    total_price=float(product_dict['precio_total']),
+                    weight=product_dict.get('peso', '')
+                )
+                products.append(product)
+            
+            return products
+
+    def delete_test_tickets(self, ticket_ids: List[int]) -> None:
+        """Elimina tickets de prueba (para limpieza en tests)."""
+        if not ticket_ids:
+            return
+            
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Eliminar productos asociados (CASCADE debería hacerlo automáticamente)
+            cursor.execute("""
+                DELETE FROM productos 
+                WHERE ticket_id = ANY(%s)
+            """, (ticket_ids,))
+            
+            # Eliminar tickets
+            cursor.execute("""
+                DELETE FROM tickets 
+                WHERE id = ANY(%s)
+            """, (ticket_ids,))
+            
+            logger.info(f"Eliminados {len(ticket_ids)} tickets de prueba")
+
+    def close(self) -> None:
+        """Cierra la conexión (no necesario con context managers)."""
+        # Los context managers manejan las conexiones automáticamente
+        pass

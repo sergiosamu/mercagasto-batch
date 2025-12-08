@@ -25,7 +25,7 @@ class MercadonaTicketParser(TicketParserBase):
             postal_code="",
             city="",
             phone="",
-            date=None,
+            date=None, # type: ignore
             time="",
             order_number="",
             invoice_number="",
@@ -117,7 +117,7 @@ class MercadonaTicketParser(TicketParserBase):
             elif re.match(r'\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}', line):
                 parts = line.split()
                 if len(parts) >= 2:
-                    ticket.date = self._extract_date(parts[0])
+                    ticket.date = self._extract_date(parts[0]) # type: ignore
                     ticket.time = parts[1]
             
             # Número de operación
@@ -151,30 +151,74 @@ class MercadonaTicketParser(TicketParserBase):
                         ticket.invoice_number = match.group(1)
     
     def _parse_products(self, ticket: TicketData) -> None:
-        """Extrae los productos del ticket de Mercadona."""
+        """Extrae los productos del ticket de Mercadona, incluyendo los que vienen en dos líneas (descripción y luego peso/precio, o al revés)."""
         in_products = False
-        
-        for line in self.lines:
-            line = self._clean_text(line)
-            
+        lines = self.lines
+        i = 0
+        while i < len(lines):
+            line = self._clean_text(lines[i])
+
             # Detectar inicio de productos
             if "Descripción" in line and "Importe" in line:
                 in_products = True
+                i += 1
                 continue
-            
+
             # Detectar fin de productos
             if "TOTAL" in line and "€" in line:
                 in_products = False
+                i += 1
                 continue
-            
+
             if not in_products or not line:
+                i += 1
                 continue
-            
-            # Parsear línea de producto
+
+            # Caso 1: Descripción/cantidad seguida de peso/precio
             product = self._parse_product_line(line)
             if product:
+                # Verificar si la siguiente línea es información de peso/precio al peso
+                if i + 1 < len(lines):
+                    next_line = self._clean_text(lines[i + 1])
+                    peso_match = re.match(
+                        r'([0-9]+,[0-9]{3})\s*kg\s*([0-9]+,[0-9]{2})\s*€/kg\s*([0-9]+,[0-9]{2})', next_line)
+                    if peso_match:
+                        product.weight = peso_match.group(1) + ' kg'
+                        product.unit_price = float(peso_match.group(2).replace(',', '.'))
+                        product.total_price = float(peso_match.group(3).replace(',', '.'))
+                        i += 1  # Saltar la línea extra
                 ticket.products.append(product)
                 logger.debug(f"Producto parseado: {product.description} - {product.total_price}€")
+                i += 1
+                continue
+
+            # Caso 2: Peso/precio seguido de descripción/cantidad
+            peso_match = re.match(
+                r'([0-9]+,[0-9]{3})\s*kg\s*([0-9]+,[0-9]{2})\s*€/kg\s*([0-9]+,[0-9]{2})', line)
+            if peso_match and i > 0:
+                prev_line = self._clean_text(lines[i - 1])
+                prev_parts = prev_line.split()
+                if len(prev_parts) >= 2:
+                    try:
+                        quantity = int(prev_parts[0])
+                        description = ' '.join(prev_parts[1:])
+                        unit_price = float(peso_match.group(2).replace(',', '.'))
+                        total_price = float(peso_match.group(3).replace(',', '.'))
+                        weight = peso_match.group(1) + ' kg'
+                        product = Product(
+                            quantity=quantity,
+                            description=description,
+                            unit_price=unit_price,
+                            total_price=total_price,
+                            weight=weight
+                        )
+                        # Evitar duplicados si ya se añadió el producto anterior
+                        if not ticket.products or ticket.products[-1].description != description or ticket.products[-1].total_price != total_price:
+                            ticket.products.append(product)
+                            logger.debug(f"Producto al peso (2 líneas, peso primero): {description} - {total_price}€")
+                    except ValueError:
+                        pass
+            i += 1
     
     def _parse_product_line(self, line: str) -> Optional[Product]:
         """
@@ -194,7 +238,7 @@ class MercadonaTicketParser(TicketParserBase):
             return None
         
         # Buscar precios (números con coma)
-        prices ]
+        prices = []
         price_indices = []
         for i, part in enumerate(parts):
             # Verificar que sea un número con coma y no contenga letras

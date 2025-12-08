@@ -227,9 +227,9 @@ class MercadonaAPIClient:
             True si la conexión es exitosa
         """
         try:
-            # Probar con una categoría conocida (agua y refrescos)
-            test_category_id = 18
-            result = self.get_category_products(test_category_id)
+            # Probar con una subcategoría conocida (aceite, vinagre y sal)
+            test_category_id = 112
+            result = self.get_subcategory_products(test_category_id)
             
             if result:
                 logger.info("✓ Conexión con API de Mercadona exitosa")
@@ -341,13 +341,14 @@ class MercadonaProductExtractor:
             logger.error(f"Error extrayendo información del producto {product_data.get('id', 'desconocido')}: {e}")
             return {}
     
-    def extract_all_products(self, category_ids: List[int], delay_between_categories: float = 2.0) -> List[Dict[str, Any]]:
+    def extract_all_products(self, category_ids: List[int], delay_between_categories: float = 2.0, treat_as_subcategories: bool = False) -> List[Dict[str, Any]]:
         """
         Extrae productos de múltiples categorías.
         
         Args:
             category_ids: Lista de IDs de categorías a procesar
             delay_between_categories: Pausa entre categorías en segundos
+            treat_as_subcategories: Si True, trata los IDs como subcategorías directamente
             
         Returns:
             Lista con todos los productos extraídos
@@ -355,17 +356,21 @@ class MercadonaProductExtractor:
         self.extraction_stats['start_time'] = time.time()
         self.extracted_products = []
         
-        logger.info(f"🚀 Iniciando extracción de {len(category_ids)} categorías")
+        logger.info(f"🚀 Iniciando extracción de {len(category_ids)} {'subcategorías' if treat_as_subcategories else 'categorías'}")
         
         for i, category_id in enumerate(category_ids, 1):
             try:
-                logger.info(f"📂 Procesando categoría {category_id} ({i}/{len(category_ids)})")
+                logger.info(f"📂 Procesando {'subcategoría' if treat_as_subcategories else 'categoría'} {category_id} ({i}/{len(category_ids)})")
                 
-                # Obtener todos los productos de la categoría
-                category_data, products = self.api_client.get_all_category_products(category_id)
+                if treat_as_subcategories:
+                    # Tratar directamente como subcategoría
+                    products = self.extract_subcategory_products(category_id)
+                else:
+                    # Obtener todos los productos de la categoría (modo original)
+                    category_data, products = self.api_client.get_all_category_products(category_id)
                 
                 if not products:
-                    logger.warning(f"No se encontraron productos en categoría {category_id}")
+                    logger.warning(f"No se encontraron productos en {'subcategoría' if treat_as_subcategories else 'categoría'} {category_id}")
                     self.extraction_stats['errors'] += 1
                     continue
                 
@@ -378,7 +383,7 @@ class MercadonaProductExtractor:
                 self.extraction_stats['categories_processed'] += 1
                 self.extraction_stats['total_products'] += len(products)
                 
-                logger.info(f"✅ Categoría {category_id}: {len(products)} productos extraídos")
+                logger.info(f"✅ {'Subcategoría' if treat_as_subcategories else 'Categoría'} {category_id}: {len(products)} productos extraídos")
                 
                 # Pausa entre categorías para evitar sobrecargar la API
                 if i < len(category_ids):
@@ -386,7 +391,7 @@ class MercadonaProductExtractor:
                     time.sleep(delay_between_categories)
                     
             except Exception as e:
-                logger.error(f"Error procesando categoría {category_id}: {e}")
+                logger.error(f"Error procesando {'subcategoría' if treat_as_subcategories else 'categoría'} {category_id}: {e}")
                 self.extraction_stats['errors'] += 1
                 continue
         
@@ -394,6 +399,44 @@ class MercadonaProductExtractor:
         self._log_final_stats()
         
         return self.extracted_products
+
+    def extract_subcategory_products(self, subcategory_id: int) -> List[Dict[str, Any]]:
+        """
+        Extrae productos directamente de una subcategoría.
+        
+        Args:
+            subcategory_id: ID de la subcategoría
+            
+        Returns:
+            Lista de productos extraídos
+        """
+        subcategory_data = self.api_client.get_subcategory_products(subcategory_id)
+        
+        if not subcategory_data:
+            logger.error(f"No se pudo obtener información de subcategoría {subcategory_id}")
+            return []
+        
+        all_products = []
+        
+        # Los productos están en categorías anidadas dentro de la subcategoría
+        nested_categories = subcategory_data.get('categories', [])
+        
+        for nested_cat in nested_categories:
+            products = nested_cat.get('products', [])
+            
+            # Añadir información de contexto a cada producto
+            for product in products:
+                product['subcategory_id'] = subcategory_id
+                product['subcategory_name'] = subcategory_data.get('name', '')
+                product['nested_category_id'] = nested_cat.get('id')
+                product['nested_category_name'] = nested_cat.get('name', '')
+            
+            all_products.extend(products)
+        
+        total_products = len(all_products)
+        logger.info(f"Subcategoría {subcategory_id}: {total_products} productos encontrados")
+        
+        return all_products
     
     def _log_final_stats(self):
         """Registra estadísticas finales de la extracción."""
