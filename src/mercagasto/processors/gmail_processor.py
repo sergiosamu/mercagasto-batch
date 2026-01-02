@@ -56,6 +56,7 @@ class GmailTicketProcessor:
             'tickets_guardados': 0,
             'tickets_duplicados': 0,
             'tickets_invalidos': 0,
+            'tickets_descartados': 0,
             'reintentos_exitosos': 0,
             'errores': 0,
             'errores_detalle': []
@@ -88,8 +89,14 @@ class GmailTicketProcessor:
             
             for f in failed:
                 try:
+                    # Obtener email del subscriptor para el processing_id
+                    subscriptor_email = None
+                    if isinstance(self.storage, PostgreSQLTicketStorage):
+                        subscriptor_email = self.storage.get_subscriptor_email_by_processing_id(f['id'])
+                    
                     result = self._process_single_pdf(
-                        f['pdf_path'], f['message_id'], processing_id=f['id']
+                        f['pdf_path'], f['message_id'], processing_id=f['id'], 
+                        subscriptor_email=subscriptor_email
                     )
                     if result['status'] == 'success':
                         stats['reintentos_exitosos'] += 1
@@ -131,46 +138,85 @@ class GmailTicketProcessor:
     
     def _process_single_email(self, message_id: str, stats: Dict[str, Any]):
         """Procesa un único email."""
-        # Descargar PDFs adjuntos
+        # Obtener remitente
+        sender_email = self.gmail_client.get_sender_email(message_id)
+        # Comprobar en la base de datos si está subscrito
+        is_subscribed = False
+        if isinstance(self.storage, PostgreSQLTicketStorage):
+            is_subscribed = self.storage.is_email_subscribed(sender_email)
+        else:
+            logger.warning("El almacenamiento no es PostgreSQL, no se puede comprobar subscripción.")
+
+        if not is_subscribed:
+            logger.info(f"Remitente {sender_email} no subscrito. Etiquetando como #notsubscribed.")
+            print(f"  ⚠ Remitente {sender_email} no subscrito. Email ignorado.")
+            stats['tickets_descartados'] += 1
+            if self.config.mark_as_read:
+                self.gmail_client.mark_as_read(message_id)
+            try:
+                self.gmail_client.add_label(message_id, label_name='#notsubscribed')
+            except TypeError:
+                self.gmail_client.add_label(message_id)
+            return
+
+        # Descargar adjuntos
         attachments = self.gmail_client.get_message_attachments(message_id)
-        stats['pdfs_descargados'] += len(attachments)
-        
-        # Procesar cada PDF
-        for attachment in attachments:
+        # Filtrar solo PDFs cuyo nombre contenga 'Mercadona'
+        filtered_attachments = [
+            att for att in attachments
+            if att['filename'].lower().endswith('.pdf') and 'mercadona' in att['filename'].lower()
+        ]
+        stats['pdfs_descargados'] += len(filtered_attachments)
+
+        if not filtered_attachments:
+            logger.info("No hay PDFs de Mercadona para procesar en este correo.")
+            print("  ⚠ No hay PDFs de Mercadona para procesar en este correo.")
+            stats['tickets_descartados'] += 1
+            # Marcar como leído y añadir etiqueta 'invalid'
+            if self.config.mark_as_read:
+                self.gmail_client.mark_as_read(message_id)
+            try:
+                self.gmail_client.add_label(message_id, label_name='invalid')
+            except TypeError:
+                self.gmail_client.add_label(message_id)
+            return
+
+        # Procesar cada PDF válido
+        for attachment in filtered_attachments:
             logger.info(f"Procesando PDF: {attachment['filename']}")
-            print(f"\\n  📄 Procesando: {attachment['filename']}")
-            
+            print(f"\n  📄 Procesando: {attachment['filename']}")
+
             # Guardar PDF con backup
             pdf_path, pdf_hash, pdf_size = self.file_processor.save_file_with_backup(
                 attachment['content'], attachment['filename']
             )
-            
+
             # Registrar procesamiento si es PostgreSQL
             processing_id = None
             if isinstance(self.storage, PostgreSQLTicketStorage):
                 processing_id = self.storage.start_processing(
-                    message_id, attachment['filename'], pdf_hash, pdf_path
+                    message_id, attachment['filename'], pdf_hash, pdf_path, sender_email
                 )
-                
+
                 self.storage.register_file_backup(
                     processing_id, 'pdf', pdf_path, pdf_hash, pdf_size
                 )
-            
+
             # Procesar PDF
-            result = self._process_single_pdf(pdf_path, message_id, processing_id)
-            
+            result = self._process_single_pdf(pdf_path, message_id, processing_id, sender_email)
+
             # Actualizar estadísticas
             self._update_stats_from_result(result, stats, attachment['filename'])
-        
+
         # Marcar como leído y añadir etiqueta
         if self.config.mark_as_read:
             self.gmail_client.mark_as_read(message_id)
-        
+
         if self.config.add_label:
             self.gmail_client.add_label(message_id)
     
     def _process_single_pdf(self, pdf_path: str, message_id: str, 
-                           processing_id: int = None) -> Dict[str, Any]:
+                           processing_id: int = None, subscriptor_email: str = None) -> Dict[str, Any]:
         """Procesa un único archivo PDF."""
         result = {'status': 'error', 'error': None, 'ticket_id': None}
         
@@ -223,7 +269,7 @@ class GmailTicketProcessor:
             if processing_id and isinstance(self.storage, PostgreSQLTicketStorage):
                 self.storage.update_processing_status(processing_id, ProcessingStatus.SAVING)
             
-            ticket_id = self.storage.save_ticket(ticket)
+            ticket_id = self.storage.save_ticket(ticket, subscriptor_email)
             
             # Completar procesamiento
             if processing_id and isinstance(self.storage, PostgreSQLTicketStorage):
@@ -305,6 +351,7 @@ class GmailTicketProcessor:
         print(f"🔄 Reintentos exitosos: {stats['reintentos_exitosos']}")
         print(f"⚠️  Tickets duplicados: {stats['tickets_duplicados']}")
         print(f"⚠️  Tickets inválidos: {stats['tickets_invalidos']}")
+        print(f"🗑️  Tickets descartados: {stats['tickets_descartados']}")
         print(f"❌ Errores: {stats['errores']}")
         
         if stats['errores_detalle']:

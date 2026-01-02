@@ -19,6 +19,31 @@ logger = get_logger(__name__)
 
 class GmailClient:
     """Cliente para interactuar con Gmail API."""
+    def get_sender_email(self, message_id: str) -> str:
+        """Obtiene el email del remitente de un mensaje."""
+        if not self.service:
+            self.authenticate()
+        try:
+            message = self.service.users().messages().get(
+                userId='me',
+                id=message_id,
+                format='metadata',
+                metadataHeaders=['From']
+            ).execute()
+            headers = message.get('payload', {}).get('headers', [])
+            for h in headers:
+                if h['name'].lower() == 'from':
+                    from_value = h['value']
+                    # Extraer email de la cabecera From
+                    import re
+                    match = re.search(r'<(.+?)>', from_value)
+                    if match:
+                        return match.group(1)
+                    return from_value.strip()
+        except Exception as e:
+            logger.error(f"No se pudo obtener el remitente del mensaje {message_id}: {e}")
+        return ""
+        
     
     SCOPES = [
         'https://www.googleapis.com/auth/gmail.readonly',
@@ -62,7 +87,7 @@ class GmailClient:
         logger.info("✓ Autenticado con Gmail correctamente")
         return self.service
     
-    def search_emails(self, query: str = 'from:noreply@mercadona.es has:attachment', 
+    def search_emails(self, query: str = 'has:attachment', 
                      max_results: int = 10, unread_only: bool = True) -> List[Dict[str, str]]:
         """
         Busca correos según una query.
@@ -160,7 +185,7 @@ class GmailClient:
             message_id: ID del mensaje
             
         Returns:
-            True si se marcó correctamente
+            True si se marcó correctamzzzente
         """
         if not self.service:
             self.authenticate()

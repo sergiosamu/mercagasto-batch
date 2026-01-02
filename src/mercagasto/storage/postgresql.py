@@ -18,7 +18,45 @@ logger = get_logger(__name__)
 
 class PostgreSQLTicketStorage(TicketStorageBase):
     """Implementación de almacenamiento en PostgreSQL."""
+
+    def is_email_subscribed(self, email: str) -> bool:
+        """Comprueba si un email está subscrito (tabla 'subscribed_emails')."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM subscribed_emails WHERE LOWER(email) = LOWER(%s) LIMIT 1
+            """, (email,))
+            return cursor.fetchone() is not None
     
+    def get_or_create_subscriptor_id(self, email: str) -> int:
+        """Obtiene el ID del subscriptor o lo crea si no existe."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Intentar obtener ID existente
+            cursor.execute("""
+                SELECT id FROM subscribed_emails WHERE LOWER(email) = LOWER(%s)
+            """, (email,))
+            
+            result = cursor.fetchone()
+            if result:
+                return result[0]
+            
+            # Si no existe, crearlo
+            cursor.execute("""
+                INSERT INTO subscribed_emails (email) VALUES (%s)
+                ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+                RETURNING id
+            """, (email,))
+            
+            result = cursor.fetchone()
+            if result is None:
+                raise ValueError(f"No se pudo crear o obtener subscriptor para {email}")
+            
+            subscriptor_id = result[0]
+            logger.info(f"Subscriptor ID obtenido/creado: {subscriptor_id} para {email}")
+            return subscriptor_id
+
     def __init__(self, config: DatabaseConfig, debug_queries: bool = False):
         """
         Inicializa el almacenamiento PostgreSQL.
@@ -61,6 +99,15 @@ class PostgreSQLTicketStorage(TicketStorageBase):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
+            # Tabla de subscriptores (debe crearse antes de las FK)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS subscribed_emails (
+                    id SERIAL PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Tabla de tiendas
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tiendas (
@@ -80,6 +127,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 CREATE TABLE IF NOT EXISTS tickets (
                     id SERIAL PRIMARY KEY,
                     tienda_id INTEGER REFERENCES tiendas(id),
+                    subscriptor_id INTEGER REFERENCES subscribed_emails(id),
                     numero_pedido VARCHAR(50),
                     numero_factura VARCHAR(50) UNIQUE,
                     fecha_compra DATE NOT NULL,
@@ -115,6 +163,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 CREATE TABLE IF NOT EXISTS processing_log (
                     id SERIAL PRIMARY KEY,
                     gmail_message_id VARCHAR(100) UNIQUE NOT NULL,
+                    subscriptor_id INTEGER REFERENCES subscribed_emails(id),
                     pdf_filename VARCHAR(500),
                     pdf_hash VARCHAR(64),
                     status VARCHAR(20) NOT NULL,
@@ -157,15 +206,24 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             "CREATE INDEX IF NOT EXISTS idx_productos_descripcion ON productos(descripcion)",
             "CREATE INDEX IF NOT EXISTS idx_processing_status ON processing_log(status)",
             "CREATE INDEX IF NOT EXISTS idx_processing_message_id ON processing_log(gmail_message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tickets_subscriptor ON tickets(subscriptor_id)",
+            "CREATE INDEX IF NOT EXISTS idx_processing_subscriptor ON processing_log(subscriptor_id)",
         ]
         
         for index in indexes:
             cursor.execute(index)
     
     def start_processing(self, message_id: str, pdf_filename: str, 
-                        pdf_hash: str, pdf_path: str) -> int:
+                        pdf_hash: str, pdf_path: str, subscriptor_email: str) -> int:
         """
         Registra el inicio del procesamiento de un ticket.
+        
+        Args:
+            message_id: ID del mensaje de Gmail
+            pdf_filename: Nombre del archivo PDF
+            pdf_hash: Hash del archivo
+            pdf_path: Ruta al archivo
+            subscriptor_email: Email del subscriptor
         
         Returns:
             ID del registro de procesamiento
@@ -173,18 +231,21 @@ class PostgreSQLTicketStorage(TicketStorageBase):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
+            # Obtener o crear subscriptor_id
+            subscriptor_id = self.get_or_create_subscriptor_id(subscriptor_email)
+            
             cursor.execute("""
                 INSERT INTO processing_log (
-                    gmail_message_id, pdf_filename, pdf_hash, status, 
+                    gmail_message_id, subscriptor_id, pdf_filename, pdf_hash, status, 
                     attempts, last_attempt, pdf_path
                 )
-                VALUES (%s, %s, %s, %s, 1, NOW(), %s)
+                VALUES (%s, %s, %s, %s, %s, 1, NOW(), %s)
                 ON CONFLICT (gmail_message_id) DO UPDATE SET
                     attempts = processing_log.attempts + 1,
                     last_attempt = NOW(),
                     status = EXCLUDED.status
                 RETURNING id
-            """, (message_id, pdf_filename, pdf_hash, 
+            """, (message_id, subscriptor_id, pdf_filename, pdf_hash, 
                   ProcessingStatus.PENDING.value, pdf_path))
             
             result = cursor.fetchone()
@@ -301,7 +362,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
         
         return is_valid, errors
     
-    def save_ticket(self, ticket: TicketData) -> int:
+    def save_ticket(self, ticket: TicketData, subscriptor_email: str = None) -> int:
         """Guarda un ticket completo en PostgreSQL."""
         # Validar ticket primero
         is_valid, errors = self.validate_ticket(ticket)
@@ -317,8 +378,13 @@ class PostgreSQLTicketStorage(TicketStorageBase):
                 # 1. Insertar o obtener tienda
                 tienda_id = self._insert_or_get_store(cursor, ticket)
                 
-                # 2. Insertar ticket - IMPORTANTE: verificar si ya existe
-                ticket_id, is_duplicate = self._insert_ticket(cursor, ticket, tienda_id)
+                # 2. Obtener subscriptor_id si se proporciona email
+                subscriptor_id = None
+                if subscriptor_email:
+                    subscriptor_id = self.get_or_create_subscriptor_id(subscriptor_email)
+                
+                # 3. Insertar ticket - IMPORTANTE: verificar si ya existe
+                ticket_id, is_duplicate = self._insert_ticket(cursor, ticket, tienda_id, subscriptor_id)
                 
                 # 3. Solo insertar productos si NO es duplicado
                 if not is_duplicate:
@@ -354,7 +420,7 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             raise ValueError("No se pudo obtener el ID de la tienda")
         return result[0]
     
-    def _insert_ticket(self, cursor, ticket: TicketData, tienda_id: int) -> Tuple[int, bool]:
+    def _insert_ticket(self, cursor, ticket: TicketData, tienda_id: int, subscriptor_id: int = None) -> Tuple[int, bool]:
         """
         Inserta el ticket principal.
         
@@ -378,17 +444,17 @@ class PostgreSQLTicketStorage(TicketStorageBase):
         
         cursor.execute("""
             INSERT INTO tickets (
-                tienda_id, numero_pedido, numero_factura, fecha_compra, 
+                tienda_id, subscriptor_id, numero_pedido, numero_factura, fecha_compra, 
                 hora_compra, total, metodo_pago,
                 iva_4_base, iva_4_cuota,
                 iva_10_base, iva_10_cuota,
                 iva_21_base, iva_21_cuota
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (numero_factura) DO NOTHING
             RETURNING id
         """, (
-            tienda_id, ticket.order_number, ticket.invoice_number,
+            tienda_id, subscriptor_id, ticket.order_number, ticket.invoice_number,
             ticket.date, ticket.time, ticket.total, ticket.payment_method,
             iva_data['4%']['base'], iva_data['4%']['cuota'],
             iva_data['10%']['base'], iva_data['10%']['cuota'],
@@ -741,6 +807,29 @@ class PostgreSQLTicketStorage(TicketStorageBase):
             """, (ticket_ids,))
             
             logger.info(f"Eliminados {len(ticket_ids)} tickets de prueba")
+            
+    def get_subscriptor_email_by_processing_id(self, processing_id: int) -> Optional[str]:
+        """
+        Obtiene el email del subscriptor a partir de un processing_id.
+        
+        Args:
+            processing_id: ID del procesamiento
+            
+        Returns:
+            Email del subscriptor o None si no se encuentra
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT se.email 
+                FROM processing_log p 
+                JOIN subscribed_emails se ON p.subscriptor_id = se.id
+                WHERE p.id = %s
+            """, (processing_id,))
+            
+            result = cursor.fetchone()
+            return result[0] if result else None
 
     def close(self) -> None:
         """Cierra la conexión (no necesario con context managers)."""

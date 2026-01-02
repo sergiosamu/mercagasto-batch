@@ -158,7 +158,7 @@ class ProductMatcher:
                         FROM mercadona_productos mp
                         JOIN categorias c ON c.id = mp.categoria_id
                         LEFT JOIN subcategorias s ON s.id = mp.subcategoria_id
-                        WHERE LOWER(TRIM(mp.nombre)) = %s
+                        WHERE LOWER(TRIM(mp.display_name)) = %s
                         LIMIT 1
                     """, (product_name,))
                     
@@ -187,7 +187,7 @@ class ProductMatcher:
                     # Obtener productos similares
                     cursor.execute("""
                         SELECT DISTINCT
-                            mp.nombre,
+                            mp.display_name,
                             mp.categoria_id,
                             mp.subcategoria_id,
                             c.nombre as categoria_nombre,
@@ -195,14 +195,14 @@ class ProductMatcher:
                         FROM mercadona_productos mp
                         JOIN categorias c ON c.id = mp.categoria_id
                         LEFT JOIN subcategorias s ON s.id = mp.subcategoria_id
-                        WHERE mp.nombre IS NOT NULL
+                        WHERE mp.display_name IS NOT NULL
                     """)
                     
                     best_match = None
                     best_ratio = 0.0
                     
                     for row in cursor.fetchall():
-                        clean_catalog_name = self._clean_product_name(row['nombre'])
+                        clean_catalog_name = self._clean_product_name(row['display_name'])
                         ratio = difflib.SequenceMatcher(None, product_name, clean_catalog_name).ratio()
                         
                         if ratio > best_ratio:
@@ -217,7 +217,7 @@ class ProductMatcher:
                             subcategoria_nombre=best_match['subcategoria_nombre'],
                             confidence=best_ratio,
                             match_type='fuzzy',
-                            match_details=f'Similitud {best_ratio:.2f} con "{best_match["nombre"]}"'
+                            match_details=f'Similitud {best_ratio:.2f} con "{best_match["display_name"]}"'
                         )
         
         except Exception as e:
@@ -245,7 +245,7 @@ class ProductMatcher:
                     params = []
                     
                     for word in significant_words:
-                        conditions.append("LOWER(mp.nombre) LIKE %s")
+                        conditions.append("LOWER(mp.display_name) LIKE %s")
                         params.append(f"%{word}%")
                     
                     query = f"""
@@ -254,13 +254,13 @@ class ProductMatcher:
                             mp.subcategoria_id,
                             c.nombre as categoria_nombre,
                             s.nombre as subcategoria_nombre,
-                            mp.nombre,
+                            mp.display_name,
                             COUNT(*) as matches
                         FROM mercadona_productos mp
                         JOIN categorias c ON c.id = mp.categoria_id
                         LEFT JOIN subcategorias s ON s.id = mp.subcategoria_id
                         WHERE ({' OR '.join(conditions)})
-                        GROUP BY mp.categoria_id, mp.subcategoria_id, c.nombre, s.nombre, mp.nombre
+                        GROUP BY mp.categoria_id, mp.subcategoria_id, c.nombre, s.nombre, mp.display_name
                         ORDER BY matches DESC, mp.categoria_id
                         LIMIT 1
                     """
@@ -303,13 +303,14 @@ class ProductMatcher:
                             mp.subcategoria_id,
                             c.nombre as categoria_nombre,
                             s.nombre as subcategoria_nombre,
-                            mp.nombre,
-                            mp.precio,
-                            ABS(mp.precio - %s) as price_diff
+                            mp.display_name,
+                            mp.unit_price,
+                            ABS(mp.unit_price - %s) as price_diff
                         FROM mercadona_productos mp
                         JOIN categorias c ON c.id = mp.categoria_id
                         LEFT JOIN subcategorias s ON s.id = mp.subcategoria_id
-                        WHERE mp.precio BETWEEN %s AND %s
+                        WHERE mp.unit_price IS NOT NULL 
+                        AND mp.unit_price BETWEEN %s AND %s
                         ORDER BY price_diff
                         LIMIT 1
                     """, (price, min_price, max_price))
@@ -317,7 +318,9 @@ class ProductMatcher:
                     row = cursor.fetchone()
                     if row:
                         # Calcular confianza basada en proximidad del precio
-                        price_similarity = 1 - (row['price_diff'] / price)
+                        price_diff = float(row['price_diff'])
+                        unit_price = float(row['unit_price'])
+                        price_similarity = 1 - (price_diff / price)
                         confidence = max(0.5, price_similarity)  # Mínimo 0.5 para price match
                         
                         return MatchResult(
@@ -327,7 +330,7 @@ class ProductMatcher:
                             subcategoria_nombre=row['subcategoria_nombre'],
                             confidence=confidence,
                             match_type='price',
-                            match_details=f'Coincidencia por precio: €{row["precio"]:.2f} vs €{price:.2f}'
+                            match_details=f'Coincidencia por precio: €{unit_price:.2f} vs €{price:.2f}'
                         )
         
         except Exception as e:
@@ -354,24 +357,25 @@ class ProductMatcher:
                         SET 
                             categoria_id = %s,
                             subcategoria_id = %s,
-                            match_confidence = %s,
-                            match_type = %s,
-                            match_details = %s,
-                            updated_at = CURRENT_TIMESTAMP
+                            categoria_detectada = %s,
+                            subcategoria_detectada = %s,
+                            confidence_score = %s,
+                            matching_method = %s
                         WHERE id = %s
                     """, (
                         match_result.categoria_id,
                         match_result.subcategoria_id,
+                        match_result.categoria_nombre,
+                        match_result.subcategoria_nombre,
                         match_result.confidence,
                         match_result.match_type,
-                        match_result.match_details,
                         product_id
                     ))
                     
                     conn.commit()
                     
                     if cursor.rowcount > 0:
-                        logger.info(f"Producto {product_id} categorizado: {match_result.categoria_nombre}")
+                        logger.info(f"Producto {product_id} categorizado: {match_result.categoria_nombre or 'Sin categoría'}")
                         return True
                     else:
                         logger.warning(f"No se encontró producto con ID {product_id}")
@@ -400,7 +404,7 @@ class ProductMatcher:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     # Obtener productos sin categoría
                     cursor.execute("""
-                        SELECT id, nombre, precio_unitario
+                        SELECT id, descripcion, precio_unitario
                         FROM productos 
                         WHERE categoria_id IS NULL
                         ORDER BY id
@@ -414,7 +418,7 @@ class ProductMatcher:
                     for product in products:
                         try:
                             match_result = self.categorize_product(
-                                product['nombre'], 
+                                product['descripcion'], 
                                 product['precio_unitario']
                             )
                             

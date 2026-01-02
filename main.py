@@ -8,8 +8,8 @@ from typing import Optional
 
 from mercagasto.config import AppConfig, setup_logging, get_logger
 from mercagasto.storage import PostgreSQLTicketStorage
-from mercagasto.processors import GmailTicketProcessor
 from mercagasto.reports import EmailReporter
+from mercagasto.processors import GmailTicketProcessor
 
 
 def setup_application() -> tuple[AppConfig, PostgreSQLTicketStorage]:
@@ -61,6 +61,7 @@ def cmd_process_tickets(args):
         print(f"\n✅ Procesamiento completado:")
         print(f"   📧 {stats['correos_encontrados']} correos procesados")
         print(f"   🎫 {stats['tickets_guardados']} tickets guardados")
+        print(f"   🗑️ {stats['tickets_descartados']} tickets descartados")
         print(f"   ❌ {stats['errores']} errores")
         
         if stats['errores'] > 0:
